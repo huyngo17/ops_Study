@@ -1,0 +1,20 @@
+@model ErrorViewModel
+
+@{
+    ViewData["Title"] = "Handled error";
+}
+
+<div class="text-center py-5">
+    <h1 class="display-6 text-danger">Handled error</h1>
+    <p class="lead">The demo exception was caught by the global exception handler.</p>
+
+    @if (Model.ShowRequestId)
+    {
+        <p>
+            <strong>Request ID:</strong>
+            <code>@Model.RequestId</code>
+        </p>
+    }
+
+    <a class="btn btn-primary" asp-controller="Home" asp-action="Index">Back home</a>
+</div>

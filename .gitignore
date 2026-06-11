@@ -1,0 +1,44 @@
+# Visual Studio / .NET
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build output
+artifacts/
+TestResults/
+coverage/
+
+# Docker / local env
+.env
+.env.*
+!.env.example
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Keep Terraform provider lock files commit-friendly for reproducible installs.
+!**/.terraform.lock.hcl
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
+
+apps/WebApplication1/WebApplication1/wwwroot/lib/
+
+Cloud_infra/.terraform.lock.hcl
