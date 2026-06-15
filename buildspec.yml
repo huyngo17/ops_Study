@@ -1,0 +1,37 @@
+version: 0.2
+
+env:
+  variables:
+    IMAGE_REPO_NAME: "ops-study-app"
+    DOCKERFILE_PATH: "apps/WebApplication1/WebApplication1/Dockerfile"
+    AWS_REGION: "ap-southeast-1"
+
+phases:
+  install:
+    runtime-versions:
+      dotnet: 10.0
+    commands:
+      - echo Logging in to ECR
+      - export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - export REPOSITORY_URI=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO_NAME
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+  pre_build:
+    commands:
+      - echo "Prepare repository"
+      - aws ecr describe-repositories --repository-names "$IMAGE_REPO_NAME" --region $AWS_REGION || aws ecr create-repository --repository-name "$IMAGE_REPO_NAME" --region $AWS_REGION
+
+  build:
+    commands:
+      - echo Building image
+      - docker build -t "$IMAGE_REPO_NAME:latest" -f "$DOCKERFILE_PATH" apps/WebApplication1/WebApplication1
+      - docker tag "$IMAGE_REPO_NAME:latest" "$REPOSITORY_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION"
+
+  post_build:
+    commands:
+      - echo Pushing image
+      - docker push "$REPOSITORY_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION"
+      - aws ecs update-service --cluster ops-study-cluster --service ops-study-service --force-new-deployment --region $AWS_REGION
+artifacts:
+  files:
+    - imagedefinitions.json

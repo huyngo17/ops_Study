@@ -22,8 +22,10 @@ namespace WebApplication1.Controllers
 
         public IActionResult Log()
         {
-            _logger.LogInformation("Manual log endpoint called at {Timestamp}", DateTimeOffset.UtcNow);
-            return Content("Log written. Check container logs with: docker logs <container-name>");
+            var timestamp = DateTimeOffset.UtcNow;
+            _logger.LogInformation("Manual log endpoint called at {Timestamp}", timestamp);
+            ViewBag.Timestamp = timestamp;
+            return View();
         }
 
         public IActionResult Boom()

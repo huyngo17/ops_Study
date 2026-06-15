@@ -1,135 +1,62 @@
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
-
-provider "aws" {
-  region = var.aws_region
-}
-
-variable "aws_region" {
-  description = "AWS region for the study environment."
-  type        = string
-  default     = "ap-southeast-1"
-}
-
-variable "project_name" {
-  description = "Name prefix for AWS resources."
-  type        = string
-  default     = "ops-study"
-}
-
-variable "app_image" {
-  description = "Initial container image. CI/CD will replace this with the ECR image."
-  type        = string
-  default     = "mcr.microsoft.com/dotnet/samples:aspnetapp"
-}
-
-variable "container_port" {
-  description = "Port exposed by the application container."
-  type        = number
-  default     = 8080
-}
-
-variable "task_cpu" {
-  description = "Fargate task CPU units. 256 = 0.25 vCPU."
-  type        = number
-  default     = 256
-}
-
-variable "task_memory" {
-  description = "Fargate task memory in MiB."
-  type        = number
-  default     = 512
-}
-
-variable "desired_count" {
-  description = "Number of running ECS tasks."
-  type        = number
-  default     = 1
-}
-
-locals {
-  container_name = "${var.project_name}-web"
-}
-
-data "aws_vpc" "default" {
-  default = true
-}
-
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
-}
-
 resource "aws_ecr_repository" "app" {
-  name                 = "${var.project_name}-web"
+  name                 = "ops-study-app"
   image_tag_mutability = "MUTABLE"
-  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
   }
 }
 
-resource "aws_ecr_lifecycle_policy" "app" {
-  repository = aws_ecr_repository.app.name
-
-  policy = jsonencode({
-    rules = [
-      {
-        rulePriority = 1
-        description  = "Keep the latest 10 images"
-        selection = {
-          tagStatus   = "any"
-          countType   = "imageCountMoreThan"
-          countNumber = 10
-        }
-        action = {
-          type = "expire"
-        }
-      }
-    ]
-  })
+resource "aws_vpc" "main" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags                 = { Name = "ops-study-vpc" }
 }
 
-resource "aws_cloudwatch_log_group" "app" {
-  name              = "/ecs/${var.project_name}"
-  retention_in_days = 7
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+  tags   = { Name = "ops-study-igw" }
 }
 
-resource "aws_iam_role" "ecs_task_execution" {
-  name = "${var.project_name}-ecs-task-execution"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Service = "ecs-tasks.amazonaws.com"
-        }
-        Action = "sts:AssumeRole"
-      }
-    ]
-  })
+resource "aws_subnet" "public_a" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "ap-southeast-1a"
+  map_public_ip_on_launch = true
+  tags                    = { Name = "ops-study-public-a" }
 }
 
-resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
-  role       = aws_iam_role.ecs_task_execution.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+resource "aws_subnet" "public_b" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = "ap-southeast-1b"
+  map_public_ip_on_launch = true
+  tags                    = { Name = "ops-study-public-b" }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+  tags = { Name = "ops-study-public-rt" }
+}
+
+resource "aws_route_table_association" "public_a" {
+  subnet_id      = aws_subnet.public_a.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "public_b" {
+  subnet_id      = aws_subnet.public_b.id
+  route_table_id = aws_route_table.public.id
 }
 
 resource "aws_security_group" "alb" {
-  name        = "${var.project_name}-alb-sg"
-  description = "Allow public HTTP traffic to the ALB."
-  vpc_id      = data.aws_vpc.default.id
+  name   = "ops-study-alb-sg"
+  vpc_id = aws_vpc.main.id
 
   ingress {
     from_port   = 80
@@ -146,14 +73,13 @@ resource "aws_security_group" "alb" {
   }
 }
 
-resource "aws_security_group" "ecs_tasks" {
-  name        = "${var.project_name}-ecs-tasks-sg"
-  description = "Allow ALB traffic to ECS tasks."
-  vpc_id      = data.aws_vpc.default.id
+resource "aws_security_group" "ecs" {
+  name   = "ops-study-ecs-sg"
+  vpc_id = aws_vpc.main.id
 
   ingress {
-    from_port       = var.container_port
-    to_port         = var.container_port
+    from_port       = 8080
+    to_port         = 8080
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
@@ -167,28 +93,27 @@ resource "aws_security_group" "ecs_tasks" {
 }
 
 resource "aws_lb" "app" {
-  name               = "${var.project_name}-alb"
+  name               = "ops-study-alb"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
-  subnets            = sort(data.aws_subnets.default.ids)
+  subnets            = [aws_subnet.public_a.id, aws_subnet.public_b.id]
 }
 
 resource "aws_lb_target_group" "app" {
-  name        = "${var.project_name}-tg"
-  port        = var.container_port
+  name        = "ops-study-tg"
+  port        = 8080
   protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
   target_type = "ip"
-  vpc_id      = data.aws_vpc.default.id
 
   health_check {
-    enabled             = true
     path                = "/"
-    matcher             = "200-399"
+    protocol            = "HTTP"
+    matcher             = "200"
     interval            = 30
-    timeout             = 5
     healthy_threshold   = 2
-    unhealthy_threshold = 3
+    unhealthy_threshold = 2
   }
 }
 
@@ -203,43 +128,53 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-resource "aws_ecs_cluster" "app" {
-  name = "${var.project_name}-cluster"
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name = "ops-study-ecs-task-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_task_execution_policy" {
+  role       = aws_iam_role.ecs_task_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_ecs_cluster" "main" {
+  name = "ops-study-cluster"
 }
 
 resource "aws_ecs_task_definition" "app" {
-  family                   = "${var.project_name}-task"
-  requires_compatibilities = ["FARGATE"]
+  family                   = "ops-study-app"
   network_mode             = "awsvpc"
-  cpu                      = var.task_cpu
-  memory                   = var.task_memory
-  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
-
-  runtime_platform {
-    operating_system_family = "LINUX"
-    cpu_architecture        = "X86_64"
-  }
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
 
   container_definitions = jsonencode([
     {
-      name      = local.container_name
-      image     = var.app_image
+      name      = "WebApplication1"
+      image     = "${aws_ecr_repository.app.repository_url}:latest"
       essential = true
-
       portMappings = [
         {
-          containerPort = var.container_port
-          hostPort      = var.container_port
+          containerPort = 8080
           protocol      = "tcp"
         }
       ]
-
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          awslogs-group         = aws_cloudwatch_log_group.app.name
-          awslogs-region        = var.aws_region
-          awslogs-stream-prefix = "app"
+          awslogs-group         = "/ecs/ops-study"
+          awslogs-region        = "ap-southeast-1"
+          awslogs-stream-prefix = "WebApplication1"
         }
       }
     }
@@ -247,50 +182,186 @@ resource "aws_ecs_task_definition" "app" {
 }
 
 resource "aws_ecs_service" "app" {
-  name            = "${var.project_name}-service"
-  cluster         = aws_ecs_cluster.app.id
+  name            = "ops-study-service"
+  cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.app.arn
-  desired_count   = var.desired_count
+  desired_count   = 1
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = sort(data.aws_subnets.default.ids)
-    security_groups  = [aws_security_group.ecs_tasks.id]
+    subnets          = [aws_subnet.public_a.id, aws_subnet.public_b.id]
+    security_groups  = [aws_security_group.ecs.id]
     assign_public_ip = true
   }
 
   load_balancer {
     target_group_arn = aws_lb_target_group.app.arn
-    container_name   = local.container_name
-    container_port   = var.container_port
+    container_name   = "WebApplication1"
+    container_port   = 8080
   }
 
   depends_on = [aws_lb_listener.http]
 }
 
-output "alb_url" {
-  description = "Public URL for the app."
-  value       = "http://${aws_lb.app.dns_name}"
+# IAM role for EC2 to interact with ECR/ECS/SSM
+resource "aws_iam_role" "jenkins_ec2_role" {
+  name = "jenkins-ec2-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })
 }
 
-output "alb_dns_name" {
-  description = "DNS name to use when creating a domain alias."
-  value       = aws_lb.app.dns_name
+resource "aws_iam_role_policy_attachment" "jenkins_ecr" {
+  role       = aws_iam_role.jenkins_ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
 }
 
-output "ecr_repository_url" {
-  description = "ECR repository URL for CI/CD image pushes."
-  value       = aws_ecr_repository.app.repository_url
+resource "aws_iam_role_policy_attachment" "jenkins_ecs" {
+  role       = aws_iam_role.jenkins_ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonECS_FullAccess"
 }
 
-output "ecs_cluster_name" {
-  value = aws_ecs_cluster.app.name
+resource "aws_iam_role_policy_attachment" "jenkins_ssm" {
+  role       = aws_iam_role.jenkins_ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-output "ecs_service_name" {
-  value = aws_ecs_service.app.name
+resource "aws_iam_instance_profile" "jenkins_profile" {
+  name = "jenkins-instance-profile"
+  role = aws_iam_role.jenkins_ec2_role.name
 }
 
-output "ecs_container_name" {
-  value = local.container_name
+# Security group for Jenkins EC2
+resource "aws_security_group" "jenkins_sg" {
+  name   = "jenkins-sg"
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    description = "SSH from my IP"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["113.23.53.255/32"]
+  }
+
+  ingress {
+    description = "Jenkins UI"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# EC2 instance
+resource "aws_instance" "jenkins" {
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = "c7i-flex.large"
+  subnet_id                   = aws_subnet.public_a.id
+  associate_public_ip_address = true
+  vpc_security_group_ids      = [aws_security_group.jenkins_sg.id]
+  iam_instance_profile        = aws_iam_instance_profile.jenkins_profile.name
+  key_name                    = aws_key_pair.jenkins.key_name
+  root_block_device {
+    volume_size = 30
+    volume_type = "gp3"
+  }
+
+  user_data = file("${path.module}/jenkins_user_data.sh")
+
+  tags = { Name = "jenkins-server" }
+}
+
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"]
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+}
+
+resource "aws_eip" "jenkins" {
+  tags = { Name = "jenkins-eip" }
+}
+
+resource "aws_eip_association" "jenkins" {
+  instance_id   = aws_instance.jenkins.id
+  allocation_id = aws_eip.jenkins.id
+}
+
+output "jenkins_public_ip" {
+  description = "Public IP (Elastic IP) of Jenkins server"
+  value       = aws_eip.jenkins.public_ip
+}
+
+output "jenkins_url" {
+  value = "http://${aws_eip.jenkins.public_ip}:8080"
+}
+
+resource "tls_private_key" "jenkins" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+resource "aws_key_pair" "jenkins" {
+  key_name   = "jenkins-key"
+  public_key = tls_private_key.jenkins.public_key_openssh
+}
+
+resource "local_file" "jenkins_pem" {
+  content         = tls_private_key.jenkins.private_key_pem
+  filename        = "${path.module}/jenkins-key.pem"
+  file_permission = "0600"
+}
+
+resource "aws_iam_role_policy" "jenkins_ssm_put" {
+  name = "jenkins-ssm-put-policy"
+  role = aws_iam_role.jenkins_ec2_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:PutParameter"]
+      Resource = "arn:aws:ssm:ap-southeast-1:*:parameter/jenkins/initial_admin_password"
+    }]
+  })
+}
+resource "aws_cloudwatch_log_group" "ecs_log_group" {
+  name              = "/ecs/ops-study"
+  retention_in_days = 7 # Tự động xóa log sau 7 ngày để tiết kiệm chi phí
+
+  tags = {
+    Environment = "production"
+    Application = "ops-study"
+  }
+}
+resource "aws_iam_role_policy" "ecs_task_execution_cloudwatch" {
+  name = "ops-study-ecs-task-execution-cloudwatch"
+  role = aws_iam_role.ecs_task_execution_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ]
+      Resource = "${aws_cloudwatch_log_group.ecs_log_group.arn}:*"
+    }]
+  })
 }
