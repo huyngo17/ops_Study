@@ -1,0 +1,14 @@
+- name: "[1/3] Cài đặt chung cho tất cả các node"
+  hosts: k8s_cluster
+  roles:
+    - common
+
+- name: "[2/3] Khoi tao control plane"
+  hosts: control_plane
+  roles:
+    - control_plane
+
+- name: "[3/3] Join worker vao cluster"
+  hosts: workers
+  roles:
+    - worker

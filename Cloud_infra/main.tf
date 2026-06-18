@@ -1,6 +1,7 @@
 resource "aws_ecr_repository" "app" {
   name                 = "ops-study-app"
   image_tag_mutability = "MUTABLE"
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
@@ -179,6 +180,7 @@ resource "aws_ecs_task_definition" "app" {
       }
     }
   ])
+  depends_on = [aws_cloudwatch_log_group.ecs_log_group]
 }
 
 resource "aws_ecs_service" "app" {

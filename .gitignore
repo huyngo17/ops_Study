@@ -42,3 +42,9 @@ Thumbs.db
 apps/WebApplication1/WebApplication1/wwwroot/lib/
 
 Cloud_infra/.terraform.lock.hcl
+
+*.json
+
+*.pem
+
+.kiro/
