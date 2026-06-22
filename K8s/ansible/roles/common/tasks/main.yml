@@ -2,36 +2,41 @@
   command: swapoff -a
   changed_when: false
 
-- lineinfile:
+- name: Xóa swap khỏi /etc/fstab
+  lineinfile:
     path: /etc/fstab
     regexp: '^\s*[^#].*\sswap\s'
     state: absent
 
-- name: ghi kernel vào file
-  copy: 
+- name: Ghi kernel modules cần thiết cho Kubernetes
+  copy:
     dest: /etc/modules-load.d/k8s.conf
     content: |
       overlay
       br_netfilter
 
-- command: modprobe overlay
+- name: Tải module kernel overlay
+  command: modprobe overlay
   changed_when: false
 
-- command: modprobe br_netfilter
+- name: Tải module kernel br_netfilter
+  command: modprobe br_netfilter
   changed_when: false
 
-- name: Bật kernel params cho K8s networking
-  copy: 
+- name: Bật kernel params cho Kubernetes networking
+  copy:
     dest: /etc/sysctl.d/k8s.conf
     content: |
       net.bridge.bridge-nf-call-iptables  = 1
       net.bridge.bridge-nf-call-ip6tables = 1
       net.ipv4.ip_forward                 = 1
-- command: sysctl --system
+
+- name: Reload sysctl settings
+  command: sysctl --system
   changed_when: false
 
-- name: Cài containerd
-  apt: 
+- name: Cài containerd prerequisites
+  apt:
     name:
       - ca-certificates
       - curl
@@ -39,18 +44,20 @@
     state: present
     update_cache: true
 
-- file: 
+- name: Tạo thư mục /etc/apt/keyrings
+  file:
     path: /etc/apt/keyrings
     state: directory
     mode: '0755'
 
-- name: cài gpg phục vụ việc xác minh
+- name: Tải Docker GPG key
   get_url:
     url: https://download.docker.com/linux/ubuntu/gpg
     dest: /etc/apt/keyrings/docker.asc
     mode: '0644'
 
-- apt_repository:
+- name: Thêm Docker apt repository
+  apt_repository:
     repo: >-
       deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
       https://download.docker.com/linux/ubuntu
@@ -58,43 +65,46 @@
     filename: docker
     state: present
 
-- apt: 
+- name: Cài containerd
+  apt:
     name: containerd.io
     state: present
     update_cache: true
 
-- name: cấu hình containerd dùng systemdcgroup
+- name: Cấu hình containerd dùng systemd cgroup
   shell:
     cmd: containerd config default > /etc/containerd/config.toml
   args:
     creates: /etc/containerd/config.toml
 
-- lineinfile:
-     path: /etc/containerd/config.toml
-     regexp: 'SystemdCgroup = false'
-     line: '            SystemdCgroup = true'
-  notify: restart containerd
+- name: Kích hoạt SystemdCgroup trong containerd config
+  lineinfile:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    line: '            SystemdCgroup = true'
 
-- name: dùng systemctl enabled containerd on boot
+- name: Enable and start containerd
   systemd:
     name: containerd
     enabled: true
     state: started
 
-- name: Cài kubeadm kubelet kubectl
+- name: Tải Kubernetes apt key
   get_url:
     url: https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key
     dest: /etc/apt/keyrings/kubernetes.asc
     mode: '0644'
 
-- apt_repository: 
+- name: Thêm Kubernetes apt repository
+  apt_repository:
     repo: >-
       deb [signed-by=/etc/apt/keyrings/kubernetes.asc]
       https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /
     filename: kubernetes
     state: present
 
-- apt:
+- name: Cài kubelet kubeadm kubectl
+  apt:
     name:
       - kubelet
       - kubeadm
@@ -102,14 +112,16 @@
     state: present
     update_cache: true
 
-- dpkg_selections:
-    name: "{{item}}"
+- name: Hold kube packages
+  dpkg_selections:
+    name: "{{ item }}"
     selection: hold
-    loop:
-      - kubelet
-      - kubeadm
-      - kubectl
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
 
-- systemd:
-    name:
+- name: Enable kubelet service
+  systemd:
+    name: kubelet
     enabled: true
