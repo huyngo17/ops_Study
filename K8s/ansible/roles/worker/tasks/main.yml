@@ -1,0 +1,13 @@
+- name: Kiểm tra xem Worker Node đã join vào Cluster nào chưa
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: worker_kubelet_check
+
+- name: Join Worker Node vào Cluster bằng lệnh từ Control Plane
+  # Thêm bộ lọc | default('') để Ansible không bị crash giao diện khi chưa đọc được biến
+  ansible.builtin.command: "{{ hostvars['master']['control_plane_kubernetes_join_command'] | default('') }}"
+  register: worker_join_output
+  when:
+    - not worker_kubelet_check.stat.exists
+    - hostvars['master']['control_plane_kubernetes_join_command'] is defined
+  changed_when: worker_join_output.rc == 0

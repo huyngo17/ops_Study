@@ -12,3 +12,11 @@
   hosts: workers
   roles:
     - worker
+
+- name: "[4/4] Triển khai Ingress Controller & Management Stack"
+  hosts: control_plane
+  vars:
+    domain_suffix: "54.169.245.170.nip.io" # Thay bằng IP/Domain thực tế của ông
+    rancher_password: "AdminSecurePass123"
+  roles:
+    - management_apps

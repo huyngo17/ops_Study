@@ -48,3 +48,13 @@ Cloud_infra/.terraform.lock.hcl
 *.pem
 
 .kiro/
+
+aws/dist/
+
+*.zip
+
+aws/
+
+K8s/ansible/inventory.ini
+
+*.hcl
