@@ -14,10 +14,8 @@ output "worker2_public_ip" {
   value = aws_instance.worker2.public_ip
 }
 
-# Copy paste thẳng vào ansible/inventory.ini sau khi apply
-output "ansible_inventory" {
-  value = <<-EOT
-
+resource "local_file" "ansible_inventory" {
+  content = <<-EOT
     [control_plane]
     master  ansible_host=${aws_instance.master.public_ip}
 
@@ -29,4 +27,10 @@ output "ansible_inventory" {
     control_plane
     workers
   EOT
+
+  # Đường dẫn tuyệt đối đến file inventory của bạn
+  filename = "/home/ngoqu/gitcode/ops_Study/K8s/ansible/inventory.ini"
+
+  # Quyền đọc ghi cơ bản cho file cấu hình
+  file_permission = "0644"
 }

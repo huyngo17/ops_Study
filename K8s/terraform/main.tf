@@ -1,12 +1,18 @@
 terraform {
   required_providers {
-    aws   = { source = "hashicorp/aws", version = "~> 5.0" }
-    tls   = { source = "hashicorp/tls", version = "~> 4.0" }
-    local = { source = "hashicorp/local", version = "~> 2.0" }
+    aws        = { source = "hashicorp/aws", version = "~> 5.0" }
+    tls        = { source = "hashicorp/tls", version = "~> 4.0" }
+    local      = { source = "hashicorp/local", version = "~> 2.0" }
+    cloudflare = { source = "cloudflare/cloudflare", version = "~> 3.0" }
   }
 }
+
 provider "aws" {
   region = var.aws_region
+}
+
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
 }
 
 # Tạo key pair
@@ -23,6 +29,6 @@ resource "aws_key_pair" "k8s_key_pair" {
 
 resource "local_file" "private_key" {
   content         = tls_private_key.k8s_key.private_key_pem
-  filename        = "${path.module}/${var.cluster_name}.pem"
+  filename        = "${path.module}/../ansible/${var.cluster_name}.pem"
   file_permission = "0400" # chỉ owner đọc được, SSH yêu cầu permission này
 }

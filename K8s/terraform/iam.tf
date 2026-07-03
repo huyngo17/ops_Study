@@ -16,9 +16,8 @@ resource "aws_iam_role" "k8s_node_role" {
 
 resource "aws_iam_role_policy_attachment" "k8s_node_ebs" {
   role       = aws_iam_role.k8s_node_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEBSCSIDriverPolicy"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
-
 resource "aws_iam_role_policy_attachment" "k8s_node_ecr_readonly" {
   role       = aws_iam_role.k8s_node_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"

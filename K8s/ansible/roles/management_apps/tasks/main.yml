@@ -1,3 +1,16 @@
+- name: Cài đặt pip3 và các dependency hệ thống
+  apt:
+    name:
+      - python3-pip
+      - python3-setuptools
+    state: present
+    update_cache: true
+
+- name: Cài đặt thư viện kubernetes cho Python bằng pip
+  pip:
+    name: kubernetes
+    state: present
+
 - name: Cài đặt các gói phụ trợ cần thiết
   apt:
     name:
@@ -5,15 +18,27 @@
     state: present
     update_cache: true
 
-- name: Tải và thêm GPG key của Helm
+
+- name: Đảm bảo thư mục lưu trữ keyrings tồn tại
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Tải GPG Key của Helm (dạng ASCII) về file tạm
   get_url:
-    url: https://baltocdn.com/helm/signing.asc
-    dest: /etc/apt/keyrings/helm.asc
+    url: https://packages.buildkite.com/helm-linux/helm-debian/gpgkey
+    dest: /tmp/helm.gpg.asc
     mode: '0644'
+
+- name: Chuyển đổi GPG Key từ ASCII sang Binary (de-armor)
+  command: gpg --dearmor --yes -o /etc/apt/keyrings/helm.gpg /tmp/helm.gpg.asc
+  args:
+    creates: /etc/apt/keyrings/helm.gpg
 
 - name: Thêm APT Repository của Helm vào hệ thống
   apt_repository:
-    repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/helm.asc] https://baltocdn.com/helm/stable/debian/ all main"
+    repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/helm.gpg] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main"
     filename: helm-stable-debian
     state: present
 
@@ -22,6 +47,92 @@
     name: helm
     state: present
     update_cache: true
+
+- name: Đảm bảo thư mục .kube tồn tại trong thư mục nhà của user
+  file:
+    path: "~/.kube"
+    state: directory
+    mode: '0700'
+
+- name: Sao chép admin.conf vào cấu hình định danh cá nhân (.kube/config)
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "~/.kube/config"
+    remote_src: true
+    mode: '0600'
+
+- name: Lấy danh sách node Kubernetes để gắn nhãn worker / topology
+  kubernetes.core.k8s_info:
+    kind: Node
+    kubeconfig: /etc/kubernetes/admin.conf
+  register: management_apps_k8s_nodes
+
+- name: Gắn nhãn worker và topology cho node worker
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Node
+    name: "{{ item.metadata.name }}"
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition:
+      metadata:
+        labels:
+          node-role.kubernetes.io/worker: ""
+          topology.kubernetes.io/region: ap-southeast-1
+          topology.kubernetes.io/zone: ap-southeast-1a
+          failure-domain.beta.kubernetes.io/region: ap-southeast-1
+          failure-domain.beta.kubernetes.io/zone: ap-southeast-1a
+  when: "'node-role.kubernetes.io/control-plane' not in item.metadata.labels"
+  loop: "{{ management_apps_k8s_nodes.resources }}"
+
+- name: Lấy PVC trạng thái Pending trong namespace harbor
+  kubernetes.core.k8s_info:
+    kind: PersistentVolumeClaim
+    namespace: harbor
+    kubeconfig: /etc/kubernetes/admin.conf
+  register: management_apps_harbor_pvcs
+
+- name: Xóa các PVC Pending trong namespace harbor để cho provisioner tạo lại
+  kubernetes.core.k8s:
+    state: absent
+    kind: PersistentVolumeClaim
+    name: "{{ item.metadata.name }}"
+    namespace: harbor
+    kubeconfig: /etc/kubernetes/admin.conf
+  loop: "{{ management_apps_harbor_pvcs.resources }}"
+  when: item.status is defined and item.status.phase == 'Pending'
+
+- name: Lấy PVC trạng thái Pending trong namespace jenkins
+  kubernetes.core.k8s_info:
+    kind: PersistentVolumeClaim
+    namespace: jenkins
+    kubeconfig: /etc/kubernetes/admin.conf
+  register: management_apps_jenkins_pvcs
+
+- name: Xóa các PVC Pending trong namespace jenkins để cho provisioner tạo lại
+  kubernetes.core.k8s:
+    state: absent
+    kind: PersistentVolumeClaim
+    name: "{{ item.metadata.name }}"
+    namespace: jenkins
+    kubeconfig: /etc/kubernetes/admin.conf
+  loop: "{{ management_apps_jenkins_pvcs.resources }}"
+  when: item.status is defined and item.status.phase == 'Pending'
+
+- name: Đợi cho các PVC chính trong harbor chuyển sang Bound (tối đa 10 phút)
+  kubernetes.core.k8s_info:
+    kind: PersistentVolumeClaim
+    namespace: harbor
+    kubeconfig: /etc/kubernetes/admin.conf
+  register: management_apps_harbor_pvcs_check
+  until: >
+    (management_apps_harbor_pvcs_check.resources
+    | selectattr('status', 'defined')
+    | map(attribute='status.phase')
+    | select('equalto', 'Pending')
+    | list
+    | length) == 0
+  retries: 30
+  delay: 20
 
 - name: Thêm và cập nhật các Helm Repository cho hệ thống
   kubernetes.core.helm_repository:
@@ -38,168 +149,6 @@
     - { name: 'grafana', url: 'https://grafana.github.io/helm-charts' }
     - { name: 'jenkins', url: 'https://charts.jenkins.io' }
 
-- name: Tạo namespace cho Ingress Nginx
-  kubernetes.core.k8s:
-    name: ingress-nginx
-    kind: Namespace
-    state: present
-
-- name: Cài đặt NGINX Ingress Controller
-  kubernetes.core.helm:
-    name: ingress-nginx
-    chart_ref: ingress-nginx/ingress-nginx
-    release_namespace: ingress-nginx
-    set_values:
-      - value: "controller.nodeSelector.node-role.kubernetes.io/worker="
-      - value: "controller.service.type=NodePort"
-      - value: "controller.service.nodePorts.http=30080"
-      - value: "controller.service.nodePorts.https=30443"
-      # Cấu hình giúp Ingress hiểu traffic đi qua tầng Proxy/ALB phía trước
-      - value: "controller.config.use-forwarded-headers=true"
-
-- name: Tạo namespace cho Rancher
-  kubernetes.core.k8s:
-    name: cattle-system
-    kind: Namespace
-    state: present
-
-- name: Cài đặt Rancher Server (Nhận SSL từ bên ngoài ALB)
-  kubernetes.core.helm:
-    name: rancher
-    chart_ref: rancher-stable/rancher
-    release_namespace: cattle-system
-    set_values:
-      - value: "hostname=rancher.{{ domain_suffix }}"
-      - value: "bootstrapPassword={{ rancher_password }}"
-      - value: "replicas=1"
-      - value: "nodeSelector.node-role.kubernetes.io/worker="
-      # CHỖ SỬA QUAN TRỌNG: Báo cho Rancher biết ALB bên ngoài đã lo phần SSL/TLS rồi
-      - value: "tls=external" 
-      # Luật chống trùng node khi nhân bản (Pod Anti-Affinity)
-      - value: "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchExpressions[0].key=app"
-      - value: "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchExpressions[0].operator=In"
-      - value: "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchExpressions[0].values[0]=rancher"
-      - value: "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey=kubernetes.io/hostname"
-
-- name: Tạo namespace cho Harbor
-  kubernetes.core.k8s:
-    name: harbor
-    kind: Namespace
-    state: present
-
-- name: Cài đặt Harbor tích hợp qua Ingress Nginx
-  kubernetes.core.helm:
-    name: harbor
-    chart_ref: harbor/harbor
-    release_namespace: harbor
-    set_values:
-      - value: "expose.type=ingress"
-      - value: "expose.ingress.hosts.core=harbor.{{ domain_suffix }}"
-      # URL bên ngoài người dùng gõ vào (đi qua ALB bằng https)
-      - value: "externalURL=https://harbor.{{ domain_suffix }}" 
-      - value: "expose.ingress.controller=default"
-      - value: "expose.ingress.className=nginx"
-      - value: "trivy.enabled=true"
-      - value: "nodeSelector.node-role.kubernetes.io/worker="
-
-- name: Tạo namespace cho hệ thống Monitoring
-  kubernetes.core.k8s:
-    name: monitoring
-    kind: Namespace
-    state: present
-
-- name: Cài đặt Hệ thống Giám sát Toàn diện k8s-monitoring
-  kubernetes.core.helm:
-    name: k8s-monitoring
-    chart_ref: grafana/k8s-monitoring
-    release_namespace: monitoring
-    values:
-      # Cấu hình cài đặt các thành phần Backend lưu trữ nội bộ trong cụm
-      loki:
-        enabled: true
-        deploymentMode: SingleBinary
-        loki:
-          auth_enabled: false
-          commonConfig:
-            replication_factor: 1
-          # Ép các Pod của Loki chỉ chạy trên Worker Node
-          storage:
-            type: filesystem
-        singleBinary:
-          nodeSelector:
-            node-role.kubernetes.io/worker: ""
-
-      mimir:
-        enabled: true
-        deploymentMode: SingleBinary
-        mimir:
-          config:
-            multitenancy_enabled: false
-        singleBinary:
-          nodeSelector:
-            node-role.kubernetes.io/worker: ""
-
-      # Cấu hình Grafana để xem Dashboard
-      grafana:
-        enabled: true
-        nodeSelector:
-          node-role.kubernetes.io/worker: ""
-        ingress:
-          enabled: true
-          hosts:
-            - "grafana.{{ domain_suffix }}"
-          # Phối hợp với NGINX Ingress đã cài ở bước trước
-          ingressClassName: nginx
-
-      # Cấu hình Tự động cài đặt và tự động viết cấu hình cho Grafana Alloy (Agent thu thập)
-      alloy:
-        enabled: true
-        controller:
-          nodeSelector:
-            node-role.kubernetes.io/worker: ""
-
-      # Kích hoạt việc tự động thu thập (Quét) toàn bộ dữ liệu của cụm K8s
-      cluster:
-        name: my-k8s-cluster
-      metrics:
-        enabled: true
-        alloy:
-          enabled: true
-        node-exporter:
-          enabled: true
-        kube-state-metrics:
-          enabled: true
-      logs:
-        enabled: true
-        alloy:
-          enabled: true
-        pod_logs:
-          enabled: true
-        cluster_events:
-          enabled: true
-
-      # Nếu chưa cần dùng Trace (Hành trình request của Code) thì tạm tắt Tempo để tiết kiệm RAM
-      tempo:
-        enabled: false
-
-- name: Tạo namespace cho Jenkins
-  kubernetes.core.k8s:
-    name: jenkins
-    kind: Namespace
-    state: present
-
-- name: Cài đặt Jenkins tích hợp Ingress
-  kubernetes.core.helm:
-    name: jenkins
-    chart_ref: jenkins/jenkins
-    release_namespace: jenkins
-    set_values:
-      - value: "controller.javaOpts=-Xms512m -Xmx2024m"
-      - value: "controller.ingress.enabled=true"
-      - value: "controller.ingress.hostName=jenkins.{{ domain_suffix }}"
-      - value: "controller.nodeSelector.node-role.kubernetes.io/worker="
-      - value: "controller.ingress.ingressClassName=nginx"
-
 - name: Thêm Helm Repo cho AWS EBS CSI Driver
   kubernetes.core.helm_repository:
     name: aws-ebs-csi-driver
@@ -210,9 +159,13 @@
     name: aws-ebs-csi-driver
     chart_ref: aws-ebs-csi-driver/aws-ebs-csi-driver
     release_namespace: kube-system
-    set_values:
-      - value: "controller.serviceAccount.create=true"
-      - value: "node.nodeSelector.node-role.kubernetes.io/worker="
+    values:
+      controller:
+        serviceAccount:
+          create: true
+      node:
+        nodeSelector:
+          node-role.kubernetes.io/worker: ""
 
 - name: Định nghĩa StorageClass gp3 cho AWS EBS
   kubernetes.core.k8s:
@@ -231,3 +184,343 @@
       parameters:
         type: gp3
         encrypted: "true"
+
+- name: Tạo namespace cho Ingress Nginx
+  kubernetes.core.k8s:
+    name: ingress-nginx
+    api_version: v1
+    kind: Namespace
+    state: present
+    kubeconfig: /etc/kubernetes/admin.conf
+
+- name: Cài đặt NGINX Ingress Controller
+  kubernetes.core.helm:
+    name: ingress-nginx
+    chart_ref: ingress-nginx/ingress-nginx
+    release_namespace: ingress-nginx
+    values:
+      controller:
+        service:
+          type: "NodePort"
+          nodePorts:
+            http: 30080
+            https: 30443
+        tolerations:
+          - key: "node-role.kubernetes.io/control-plane"
+            operator: "Exists"
+            effect: "NoSchedule"
+        affinity:
+          nodeAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                    - key: "node-role.kubernetes.io/worker"
+                      operator: "In"
+                      values:
+                        - ""
+        config:
+          # Rất quan trọng: Giúp Ingress lấy đúng IP thật của Client (X-Forwarded-For) truyền qua ALB
+          use-forwarded-headers: "true"
+          compute-full-forwarded-for: "true"
+        ingressClassResource:
+          enabled: true
+          default: true
+        admissionWebhooks:
+          enabled: false
+
+- name: Chờ cho các Pod của NGINX Ingress Controller sẵn sàng hoàn toàn
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: ingress-nginx
+    label_selectors:
+      - app.kubernetes.io/component=controller
+  register: management_apps_nginx_ingress_pods
+  until: >
+    management_apps_nginx_ingress_pods.resources | length > 0 and
+    management_apps_nginx_ingress_pods.resources
+    | map(attribute='status.containerStatuses')
+    | select('defined') | flatten
+    | map(attribute='ready') | select('equalto', true)
+    | list | length == management_apps_nginx_ingress_pods.resources
+    | map(attribute='status.containerStatuses') | select('defined') | flatten | length
+  retries: 30
+  delay: 10
+
+- name: Cài đặt Cert-Manager (Thành phần quản lý và xin chứng chỉ Let's Encrypt)
+  kubernetes.core.k8s:
+    state: present
+    src: https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.yaml
+    kubeconfig: /etc/kubernetes/admin.conf
+
+- name: Chờ cho các Pod của cert-manager sẵn sàng hoàn toàn
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: cert-manager
+  register: management_apps_cert_manager_pods
+  until: >
+    management_apps_cert_manager_pods.resources | length > 0 and
+    management_apps_cert_manager_pods.resources
+    | map(attribute='status.containerStatuses') | flatten
+    | map(attribute='ready') | select('equalto', true)
+    | list | length == management_apps_cert_manager_pods.resources
+    | map(attribute='status.containerStatuses') | flatten | length
+  retries: 20
+  delay: 10
+
+- name: Tạo Kubernetes Secret chứa Cloudflare API Token
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: cloudflare-api-token-secret
+        namespace: cert-manager
+      type: Opaque
+      stringData:
+        api-token: ""
+
+- name: Tạo ClusterIssuer (Cấu hình Let's Encrypt)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: letsencrypt-prod
+      spec:
+        acme:
+          server: https://acme-v02.api.letsencrypt.org/directory
+          email: ngoquochuyvn2004@gmail.com
+          privateKeySecretRef:
+            name: letsencrypt-prod-account-key
+          solvers:
+            - dns01:
+                cloudflare:
+                  email: ngoquochuyvn2004@gmail.com
+                  apiTokenSecretRef:
+                    name: cloudflare-api-token-secret
+                    key: api-token
+
+- name: Tạo namespace cho Rancher
+  kubernetes.core.k8s:
+    name: cattle-system
+    kind: Namespace
+    state: present
+
+- name: Kiểm tra và xóa ValidatingWebhookConfiguration lỗi của Ingress Nginx
+  kubernetes.core.k8s:
+    name: ingress-nginx-admission
+    kind: ValidatingWebhookConfiguration
+    state: absent
+  register: management_apps_remove_webhook_result
+  # Chỉ coi là lỗi nếu thông báo lỗi KHÔNG chứa chữ "NotFound"
+  failed_when:
+    - management_apps_remove_webhook_result.failed is defined
+    - management_apps_remove_webhook_result.failed
+    - '"NotFound" not in management_apps_remove_webhook_result.msg'
+
+- name: Debug domain_suffix for Rancher install
+  debug:
+    msg:
+      - "domain_suffix={{ domain_suffix }}"
+      - "rancher_password={{ rancher_password }}"
+
+- name: Cài đặt Rancher Server (Nhận SSL từ bên ngoài ALB)
+  kubernetes.core.helm:
+    name: rancher
+    chart_ref: rancher-stable/rancher
+    release_namespace: cattle-system
+    kubeconfig: /etc/kubernetes/admin.conf
+    reset_values: true
+    values:
+      hostname: "rancher.{{ domain_suffix }}"
+      bootstrapPassword: "{{ rancher_password }}"
+      replicas: 1
+      tls: "external"
+      ingress:
+        enabled: true
+        ingressClassName: "nginx"
+        hosts:
+          - "rancher.{{ domain_suffix }}"
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchExpressions:
+                  - key: "app"
+                    operator: "In"
+                    values:
+                      - "rancher"
+
+
+- name: Tạo namespace cho Harbor
+  kubernetes.core.k8s:
+    name: harbor
+    kind: Namespace
+    state: present
+
+- name: Cài đặt Harbor tích hợp qua Ingress Nginx
+  kubernetes.core.helm:
+    name: harbor
+    chart_ref: harbor/harbor
+    release_namespace: harbor
+    kubeconfig: /etc/kubernetes/admin.conf
+    reset_values: true
+    values:
+      externalURL: "https://harbor.{{ domain_suffix }}" # URL bên ngoài người dùng gõ vào (đi qua ALB bằng https)
+      expose:
+        type: "ingress"
+        ingress:
+          className: "nginx"
+          controller: "default"
+          hosts:
+            core: "harbor.{{ domain_suffix }}"
+      trivy:
+        enabled: true
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+
+- name: Tạo namespace cho Jenkins
+  kubernetes.core.k8s:
+    name: jenkins
+    kind: Namespace
+    state: present
+
+- name: Cài đặt Jenkins tích hợp Ingress
+  kubernetes.core.helm:
+    name: jenkins
+    chart_ref: jenkins/jenkins
+    release_namespace: jenkins
+    kubeconfig: /etc/kubernetes/admin.conf
+    reset_values: true
+    values:
+      controller:
+        javaOpts: "-Xms512m -Xmx2024m"
+        nodeSelector:
+          node-role.kubernetes.io/worker: ""
+        ingress:
+          enabled: true
+          ingressClassName: "nginx"
+          hostName: "jenkins.{{ domain_suffix }}"
+
+- name: Tạo namespace cho hệ thống Monitoring
+  kubernetes.core.k8s:
+    name: monitoring
+    kind: Namespace
+    state: present
+
+- name: Cài đặt Hệ thống Giám sát Toàn diện k8s-monitoring
+  kubernetes.core.helm:
+    name: k8s-monitoring
+    chart_ref: grafana/k8s-monitoring
+    release_namespace: monitoring
+    wait: true
+    wait_timeout: "900s"
+    values:
+      # --- CẤU HÌNH BACKEND LƯU TRỮ ---
+      loki:
+        enabled: true
+        deploymentMode: SingleBinary
+        loki:
+          auth_enabled: false
+          commonConfig:
+            replication_factor: 1
+          storage:
+            type: filesystem
+        singleBinary:
+          nodeSelector:
+            node-role.kubernetes.io/worker: ""
+
+      mimir:
+        enabled: true
+        deploymentMode: SingleBinary
+        mimir:
+          config:
+            multitenancy_enabled: false
+        singleBinary:
+          nodeSelector:
+            node-role.kubernetes.io/worker: ""
+
+      grafana:
+        enabled: true
+        nodeSelector:
+          node-role.kubernetes.io/worker: ""
+        ingress:
+          enabled: true
+          hosts:
+            - "grafana.{{ domain_suffix }}"
+          ingressClassName: nginx
+
+      cluster:
+        name: my-k8s-cluster
+
+      # --- 1. KHU VỰC COLLECTORS (HẠ TẦNG AGENT) ---
+      collectors:
+        alloy:
+          enabled: true
+          nodeSelector:
+            node-role.kubernetes.io/worker: ""
+
+      # --- 2. KHU VỰC ĐÍCH ĐẾN (OBJECT TRỎ VỀ LOKI VÀ MIMIR) ---
+      destinations:
+        loki:
+          type: loki
+          url: http://k8s-monitoring-loki-target.monitoring.svc.cluster.local:3100/loki/api/v1/push
+        mimir:
+          type: prometheus
+          url: http://k8s-monitoring-mimir-target.monitoring.svc.cluster.local:8080/api/v1/push
+
+      # --- 3. KHU VỰC FEATURES (BẬT TÍNH NĂNG & GÁN CHO ALLOY) ---
+      features:
+        metrics:
+          enabled: true
+          collectors: [alloy]
+          node-exporter:
+            enabled: true
+          kube-state-metrics:
+            enabled: true
+        logs:
+          enabled: true
+          collectors: [alloy]
+          pod_logs:
+            enabled: true
+          cluster_events:
+            enabled: true
+
+      tempo:
+        enabled: false
+
+- name: Cài đặt Grafana UI standalone để mở giao diện web
+  kubernetes.core.helm:
+    name: grafana
+    chart_ref: grafana/grafana
+    release_namespace: monitoring
+    kubeconfig: /etc/kubernetes/admin.conf
+    reset_values: true
+    wait: true
+    wait_timeout: "900s"
+    values:
+      adminUser: admin
+      adminPassword: "{{ grafana_admin_password | default('123abc@A') }}"
+      persistence:
+        enabled: true
+        size: 8Gi
+        storageClassName: gp3
+      service:
+        type: ClusterIP
+      ingress:
+        enabled: true
+        ingressClassName: nginx
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-prod
+        hosts:
+          - "grafana.{{ domain_suffix }}"
+        tls:
+          - secretName: grafana-tls
+            hosts:
+              - "grafana.{{ domain_suffix }}"
