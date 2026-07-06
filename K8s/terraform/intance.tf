@@ -31,7 +31,7 @@ resource "aws_instance" "master" {
 resource "aws_instance" "worker1" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.worker_instance_type
-  subnet_id                   = aws_subnet.public_sub_1.id
+  subnet_id                   = aws_subnet.public_sub_2.id
   associate_public_ip_address = true
   vpc_security_group_ids      = [aws_security_group.sg.id]
   iam_instance_profile        = aws_iam_instance_profile.k8s_node_profile.name

@@ -59,4 +59,4 @@ K8s/ansible/inventory.ini
 
 *.hcl
 
-K8s/terraform/variables.tf
+K8s/ansible/vars/

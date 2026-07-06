@@ -15,8 +15,8 @@
 
 - name: "[4/4] Triển khai Ingress Controller & Management Stack"
   hosts: control_plane
-  vars:
-    domain_suffix: "ops-study.xyz"
-    # rancher_password: "AdminSecurePass123"  uncomment to set base pas
+  vars_files:
+    - vars/common.yml
+    - vars/secrets.yml
   roles:
     - management_apps

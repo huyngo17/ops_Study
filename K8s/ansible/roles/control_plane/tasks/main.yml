@@ -26,8 +26,8 @@
     group: ubuntu
     mode: '0600'
 
-- name: "Cài đặt mạng Flannel (CNI)"
-  ansible.builtin.command: kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+- name: "Cài đặt Calico CNI (cho NetworkPolicy và bảo mật mạng)"
+  ansible.builtin.command: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
   changed_when: false
@@ -41,20 +41,18 @@
   changed_when: false
   retries: 20
   delay: 15
-  # Kiểm tra xem có chữ "false" nào trong trạng thái sẵn sàng của container không.
-  # Nếu tất cả đều "true", tức là không chứa "false" nữa thì đi tiếp.
   until: '"false" not in control_plane_kube_system_status.stdout'
 
-- name: Chờ mạng Flannel rollout thành công (Sửa đúng sang namespace kube-flannel)
-  ansible.builtin.command: >
-    kubectl rollout status daemonset/kube-flannel-ds -n kube-flannel --timeout=60s
+- name: Chờ Calico rollout thành công
+  ansible.builtin.command:
+    kubectl rollout status daemonset/calico-node -n kube-system --timeout=120s
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
-  register: control_plane_flannel_rollout
+  register: control_plane_calico_rollout
   changed_when: false
-  retries: 5
-  delay: 10
-  until: control_plane_flannel_rollout.rc == 0
+  retries: 10
+  delay: 15
+  until: control_plane_calico_rollout.rc == 0
 
 - name: "Lấy token join worker nodes"
   ansible.builtin.command: kubeadm token create --print-join-command
@@ -66,3 +64,29 @@
 - name: Lưu lệnh join trực tiếp vào máy Master
   ansible.builtin.set_fact:
     control_plane_kubernetes_join_command: "{{ control_plane_join_command_output.stdout }}"
+
+- name: Tạo script backup etcd
+  ansible.builtin.copy:
+    dest: /usr/local/bin/etcd-backup.sh
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      mkdir -p /var/backups/etcd
+      export ETCDCTL_API=3
+      /usr/bin/etcdctl \
+        --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+        --cert=/etc/kubernetes/pki/etcd/server.crt \
+        --key=/etc/kubernetes/pki/etcd/server.key \
+        snapshot save /var/backups/etcd/etcd-$(date +%F-%H%M%S).db
+      find /var/backups/etcd -type f -mtime +30 -delete
+
+- name: Thêm cron job backup etcd hằng ngày
+  ansible.builtin.cron:
+    name: "etcd-daily-backup"
+    minute: "0"
+    hour: "2"
+    job: "/usr/local/bin/etcd-backup.sh >> /var/log/etcd-backup.log 2>&1"
+    user: root

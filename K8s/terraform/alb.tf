@@ -80,12 +80,13 @@ resource "aws_lb_target_group_attachment" "attach_worker2_http" {
 }
 
 resource "cloudflare_record" "wildcard_cname" {
-  zone_id = var.cloudflare_zone_id
-  name    = replace(var.dns_name, ".${var.domain_suffix}", "")
-  type    = "CNAME"
-  value   = aws_lb.k8s_alb.dns_name
-  ttl     = 1
-  proxied = false
+  zone_id         = var.cloudflare_zone_id
+  name            = replace(var.dns_name, ".${var.domain_suffix}", "")
+  type            = "CNAME"
+  value           = aws_lb.k8s_alb.dns_name
+  ttl             = 1
+  proxied         = false
+  allow_overwrite = true
 }
 
 output "alb_dns_name" {

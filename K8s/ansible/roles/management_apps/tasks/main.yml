@@ -3,6 +3,7 @@
     name:
       - python3-pip
       - python3-setuptools
+      - apt-transport-https
     state: present
     update_cache: true
 
@@ -10,14 +11,6 @@
   pip:
     name: kubernetes
     state: present
-
-- name: Cài đặt các gói phụ trợ cần thiết
-  apt:
-    name:
-      - apt-transport-https
-    state: present
-    update_cache: true
-
 
 - name: Đảm bảo thư mục lưu trữ keyrings tồn tại
   file:
@@ -67,7 +60,7 @@
     kubeconfig: /etc/kubernetes/admin.conf
   register: management_apps_k8s_nodes
 
-- name: Gắn nhãn worker và topology cho node worker
+- name: Gắn nhãn worker cho các node worker
   kubernetes.core.k8s:
     api_version: v1
     kind: Node
@@ -77,62 +70,8 @@
       metadata:
         labels:
           node-role.kubernetes.io/worker: ""
-          topology.kubernetes.io/region: ap-southeast-1
-          topology.kubernetes.io/zone: ap-southeast-1a
-          failure-domain.beta.kubernetes.io/region: ap-southeast-1
-          failure-domain.beta.kubernetes.io/zone: ap-southeast-1a
   when: "'node-role.kubernetes.io/control-plane' not in item.metadata.labels"
   loop: "{{ management_apps_k8s_nodes.resources }}"
-
-- name: Lấy PVC trạng thái Pending trong namespace harbor
-  kubernetes.core.k8s_info:
-    kind: PersistentVolumeClaim
-    namespace: harbor
-    kubeconfig: /etc/kubernetes/admin.conf
-  register: management_apps_harbor_pvcs
-
-- name: Xóa các PVC Pending trong namespace harbor để cho provisioner tạo lại
-  kubernetes.core.k8s:
-    state: absent
-    kind: PersistentVolumeClaim
-    name: "{{ item.metadata.name }}"
-    namespace: harbor
-    kubeconfig: /etc/kubernetes/admin.conf
-  loop: "{{ management_apps_harbor_pvcs.resources }}"
-  when: item.status is defined and item.status.phase == 'Pending'
-
-- name: Lấy PVC trạng thái Pending trong namespace jenkins
-  kubernetes.core.k8s_info:
-    kind: PersistentVolumeClaim
-    namespace: jenkins
-    kubeconfig: /etc/kubernetes/admin.conf
-  register: management_apps_jenkins_pvcs
-
-- name: Xóa các PVC Pending trong namespace jenkins để cho provisioner tạo lại
-  kubernetes.core.k8s:
-    state: absent
-    kind: PersistentVolumeClaim
-    name: "{{ item.metadata.name }}"
-    namespace: jenkins
-    kubeconfig: /etc/kubernetes/admin.conf
-  loop: "{{ management_apps_jenkins_pvcs.resources }}"
-  when: item.status is defined and item.status.phase == 'Pending'
-
-- name: Đợi cho các PVC chính trong harbor chuyển sang Bound (tối đa 10 phút)
-  kubernetes.core.k8s_info:
-    kind: PersistentVolumeClaim
-    namespace: harbor
-    kubeconfig: /etc/kubernetes/admin.conf
-  register: management_apps_harbor_pvcs_check
-  until: >
-    (management_apps_harbor_pvcs_check.resources
-    | selectattr('status', 'defined')
-    | map(attribute='status.phase')
-    | select('equalto', 'Pending')
-    | list
-    | length) == 0
-  retries: 30
-  delay: 20
 
 - name: Thêm và cập nhật các Helm Repository cho hệ thống
   kubernetes.core.helm_repository:
@@ -148,6 +87,7 @@
     - { name: 'harbor', url: 'https://helm.goharbor.io' }
     - { name: 'grafana', url: 'https://grafana.github.io/helm-charts' }
     - { name: 'jenkins', url: 'https://charts.jenkins.io' }
+    - { name: 'hashicorp', url: 'https://helm.releases.hashicorp.com' }
 
 - name: Thêm Helm Repo cho AWS EBS CSI Driver
   kubernetes.core.helm_repository:
@@ -279,7 +219,7 @@
         namespace: cert-manager
       type: Opaque
       stringData:
-        api-token: ""
+        api-token: "{{ cloudflare_api_token }}"
 
 - name: Tạo ClusterIssuer (Cấu hình Let's Encrypt)
   kubernetes.core.k8s:
@@ -303,224 +243,61 @@
                     name: cloudflare-api-token-secret
                     key: api-token
 
-- name: Tạo namespace cho Rancher
+- name: Tạo namespace dành riêng cho ArgoCD
   kubernetes.core.k8s:
-    name: cattle-system
+    name: argocd
+    api_version: v1
     kind: Namespace
     state: present
+    kubeconfig: /etc/kubernetes/admin.conf
 
-- name: Kiểm tra và xóa ValidatingWebhookConfiguration lỗi của Ingress Nginx
-  kubernetes.core.k8s:
-    name: ingress-nginx-admission
-    kind: ValidatingWebhookConfiguration
-    state: absent
-  register: management_apps_remove_webhook_result
-  # Chỉ coi là lỗi nếu thông báo lỗi KHÔNG chứa chữ "NotFound"
-  failed_when:
-    - management_apps_remove_webhook_result.failed is defined
-    - management_apps_remove_webhook_result.failed
-    - '"NotFound" not in management_apps_remove_webhook_result.msg'
-
-- name: Debug domain_suffix for Rancher install
-  debug:
-    msg:
-      - "domain_suffix={{ domain_suffix }}"
-      - "rancher_password={{ rancher_password }}"
-
-- name: Cài đặt Rancher Server (Nhận SSL từ bên ngoài ALB)
+- name: Cài đặt bộ não GitOps ArgoCD lên cụm K8s
   kubernetes.core.helm:
-    name: rancher
-    chart_ref: rancher-stable/rancher
-    release_namespace: cattle-system
+    name: argocd
+    chart_ref: argo/argo-cd
+    chart_repo_url: https://argoproj.github.io/argo-helm
+    release_namespace: argocd
     kubeconfig: /etc/kubernetes/admin.conf
     reset_values: true
-    values:
-      hostname: "rancher.{{ domain_suffix }}"
-      bootstrapPassword: "{{ rancher_password }}"
-      replicas: 1
-      tls: "external"
-      ingress:
-        enabled: true
-        ingressClassName: "nginx"
-        hosts:
-          - "rancher.{{ domain_suffix }}"
-      nodeSelector:
-        node-role.kubernetes.io/worker: ""
-      affinity:
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - topologyKey: "kubernetes.io/hostname"
-              labelSelector:
-                matchExpressions:
-                  - key: "app"
-                    operator: "In"
-                    values:
-                      - "rancher"
-
-
-- name: Tạo namespace cho Harbor
-  kubernetes.core.k8s:
-    name: harbor
-    kind: Namespace
-    state: present
-
-- name: Cài đặt Harbor tích hợp qua Ingress Nginx
-  kubernetes.core.helm:
-    name: harbor
-    chart_ref: harbor/harbor
-    release_namespace: harbor
-    kubeconfig: /etc/kubernetes/admin.conf
-    reset_values: true
-    values:
-      externalURL: "https://harbor.{{ domain_suffix }}" # URL bên ngoài người dùng gõ vào (đi qua ALB bằng https)
-      expose:
-        type: "ingress"
-        ingress:
-          className: "nginx"
-          controller: "default"
-          hosts:
-            core: "harbor.{{ domain_suffix }}"
-      trivy:
-        enabled: true
-      nodeSelector:
-        node-role.kubernetes.io/worker: ""
-
-- name: Tạo namespace cho Jenkins
-  kubernetes.core.k8s:
-    name: jenkins
-    kind: Namespace
-    state: present
-
-- name: Cài đặt Jenkins tích hợp Ingress
-  kubernetes.core.helm:
-    name: jenkins
-    chart_ref: jenkins/jenkins
-    release_namespace: jenkins
-    kubeconfig: /etc/kubernetes/admin.conf
-    reset_values: true
-    values:
-      controller:
-        javaOpts: "-Xms512m -Xmx2024m"
-        nodeSelector:
-          node-role.kubernetes.io/worker: ""
-        ingress:
-          enabled: true
-          ingressClassName: "nginx"
-          hostName: "jenkins.{{ domain_suffix }}"
-
-- name: Tạo namespace cho hệ thống Monitoring
-  kubernetes.core.k8s:
-    name: monitoring
-    kind: Namespace
-    state: present
-
-- name: Cài đặt Hệ thống Giám sát Toàn diện k8s-monitoring
-  kubernetes.core.helm:
-    name: k8s-monitoring
-    chart_ref: grafana/k8s-monitoring
-    release_namespace: monitoring
     wait: true
-    wait_timeout: "900s"
+    wait_timeout: "600s"
     values:
-      # --- CẤU HÌNH BACKEND LƯU TRỮ ---
-      loki:
-        enabled: true
-        deploymentMode: SingleBinary
-        loki:
-          auth_enabled: false
-          commonConfig:
-            replication_factor: 1
-          storage:
-            type: filesystem
-        singleBinary:
-          nodeSelector:
-            node-role.kubernetes.io/worker: ""
-
-      mimir:
-        enabled: true
-        deploymentMode: SingleBinary
-        mimir:
-          config:
-            multitenancy_enabled: false
-        singleBinary:
-          nodeSelector:
-            node-role.kubernetes.io/worker: ""
-
-      grafana:
-        enabled: true
+      global:
         nodeSelector:
           node-role.kubernetes.io/worker: ""
+      server:
         ingress:
           enabled: true
-          hosts:
-            - "grafana.{{ domain_suffix }}"
           ingressClassName: nginx
+          annotations:
+            cert-manager.io/cluster-issuer: letsencrypt-prod
+          hosts:
+            - "argo.{{ domain_suffix }}"
+          tls:
+            - secretName: argocd-server-tls
+              hosts:
+                - "argo.{{ domain_suffix }}"
 
-      cluster:
-        name: my-k8s-cluster
-
-      # --- 1. KHU VỰC COLLECTORS (HẠ TẦNG AGENT) ---
-      collectors:
-        alloy:
-          enabled: true
-          nodeSelector:
-            node-role.kubernetes.io/worker: ""
-
-      # --- 2. KHU VỰC ĐÍCH ĐẾN (OBJECT TRỎ VỀ LOKI VÀ MIMIR) ---
-      destinations:
-        loki:
-          type: loki
-          url: http://k8s-monitoring-loki-target.monitoring.svc.cluster.local:3100/loki/api/v1/push
-        mimir:
-          type: prometheus
-          url: http://k8s-monitoring-mimir-target.monitoring.svc.cluster.local:8080/api/v1/push
-
-      # --- 3. KHU VỰC FEATURES (BẬT TÍNH NĂNG & GÁN CHO ALLOY) ---
-      features:
-        metrics:
-          enabled: true
-          collectors: [alloy]
-          node-exporter:
-            enabled: true
-          kube-state-metrics:
-            enabled: true
-        logs:
-          enabled: true
-          collectors: [alloy]
-          pod_logs:
-            enabled: true
-          cluster_events:
-            enabled: true
-
-      tempo:
-        enabled: false
-
-- name: Cài đặt Grafana UI standalone để mở giao diện web
-  kubernetes.core.helm:
-    name: grafana
-    chart_ref: grafana/grafana
-    release_namespace: monitoring
+- name: Khởi tạo Root Application để ArgoCD tự động đồng bộ đống Apps trên Git
+  kubernetes.core.k8s:
+    state: present
     kubeconfig: /etc/kubernetes/admin.conf
-    reset_values: true
-    wait: true
-    wait_timeout: "900s"
-    values:
-      adminUser: admin
-      adminPassword: "{{ grafana_admin_password | default('123abc@A') }}"
-      persistence:
-        enabled: true
-        size: 8Gi
-        storageClassName: gp3
-      service:
-        type: ClusterIP
-      ingress:
-        enabled: true
-        ingressClassName: nginx
-        annotations:
-          cert-manager.io/cluster-issuer: letsencrypt-prod
-        hosts:
-          - "grafana.{{ domain_suffix }}"
-        tls:
-          - secretName: grafana-tls
-            hosts:
-              - "grafana.{{ domain_suffix }}"
+    definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata:
+        name: root-bootstrap-apps
+        namespace: argocd
+      spec:
+        project: default
+        source:
+          repoURL: 'https://github.com/huyngo17/ops_Study'
+          targetRevision: HEAD
+          path: apps
+        destination:
+          server: 'https://kubernetes.default.svc'
+          namespace: argocd
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true

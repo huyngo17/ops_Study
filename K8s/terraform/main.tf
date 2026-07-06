@@ -15,8 +15,6 @@ provider "cloudflare" {
   api_token = var.cloudflare_api_token
 }
 
-# Tạo key pair
-
 resource "tls_private_key" "k8s_key" {
   algorithm = "RSA"
   rsa_bits  = 4096
@@ -31,4 +29,21 @@ resource "local_file" "private_key" {
   content         = tls_private_key.k8s_key.private_key_pem
   filename        = "${path.module}/../ansible/${var.cluster_name}.pem"
   file_permission = "0400" # chỉ owner đọc được, SSH yêu cầu permission này
+}
+
+resource "null_resource" "run_ansible" {
+  # Ý nghĩa: Chỉ chạy block này sau khi các máy Master và Worker đã được tạo xong hoàn toàn
+  depends_on = [
+    aws_instance.master,
+    aws_instance.worker1,
+    aws_instance.worker2,
+    local_file.ansible_inventory
+  ]
+  # 3. Kích hoạt lệnh chạy Ansible Playbook tự động
+  provisioner "local-exec" {
+    command = <<EOT
+      cd ${path.module}/../ansible
+      ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i inventory.ini playbook.yml
+    EOT
+  }
 }
