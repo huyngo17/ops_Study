@@ -1,5 +1,34 @@
 ---
 # ============================================================
+# NODE-EXPORTER - Node hardware/OS metrics
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: node-exporter
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://prometheus-community.github.io/helm-charts'
+    chart: prometheus-node-exporter
+    targetRevision: 4.x.x
+    helm:
+      values: |
+        tolerations:
+          - operator: Exists
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+
+---
+# ============================================================
 # KUBE-STATE-METRICS - K8s resource metrics (pods, deployments...)
 # ============================================================
 apiVersion: argoproj.io/v1alpha1
@@ -386,12 +415,12 @@ spec:
               // METRICS: kube-state-metrics → Mimir (resource counts)
               // ============================================================
               discovery.kubernetes "kube_state_metrics" {
-                role = "service"
+                role = "pod"
                 namespaces {
                   names = ["monitoring"]
                 }
                 selectors {
-                  role  = "service"
+                  role  = "pod"
                   label = "app.kubernetes.io/name=kube-state-metrics"
                 }
               }
@@ -400,6 +429,26 @@ spec:
                 targets    = discovery.kubernetes.kube_state_metrics.targets
                 forward_to = [prometheus.remote_write.mimir.receiver]
                 job_name   = "kube-state-metrics"
+              }
+
+              // ============================================================
+              // METRICS: node-exporter → Mimir (node hardware metrics)
+              // ============================================================
+              discovery.kubernetes "node_exporter" {
+                role = "pod"
+                namespaces {
+                  names = ["monitoring"]
+                }
+                selectors {
+                  role  = "pod"
+                  label = "app.kubernetes.io/name=prometheus-node-exporter"
+                }
+              }
+
+              prometheus.scrape "node_exporter" {
+                targets    = discovery.kubernetes.node_exporter.targets
+                forward_to = [prometheus.remote_write.mimir.receiver]
+                job_name   = "node-exporter"
               }
         controller:
           type: daemonset
