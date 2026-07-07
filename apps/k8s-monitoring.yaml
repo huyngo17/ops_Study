@@ -36,7 +36,6 @@ spec:
           persistence:
             enabled: true
             size: 10Gi
-        # Tắt các component không cần trong SingleBinary mode
         read:
           replicas: 0
         write:
@@ -44,6 +43,72 @@ spec:
         backend:
           replicas: 0
         gateway:
+          enabled: true
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+
+---
+# --- MIMIR: Metrics storage (Prometheus-compatible) ---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mimir
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://grafana.github.io/helm-charts'
+    chart: mimir-distributed
+    targetRevision: 5.x.x
+    helm:
+      values: |
+        # SingleBinary mode - đơn giản nhất cho self-hosted
+        mimir:
+          structuredConfig:
+            multitenancy_enabled: false
+            common:
+              storage:
+                backend: filesystem
+                filesystem:
+                  dir: /data
+            blocks_storage:
+              filesystem:
+                dir: /data/blocks
+            ingester:
+              ring:
+                replication_factor: 1
+        # Dùng single binary thay vì microservices
+        deploymentMode: SingleBinary
+        singleBinary:
+          replicas: 1
+          nodeSelector:
+            node-role.kubernetes.io/worker: ""
+          persistence:
+            enabled: true
+            size: 20Gi
+        # Tắt các microservice component
+        ingester:
+          replicas: 0
+        distributor:
+          replicas: 0
+        querier:
+          replicas: 0
+        query-frontend:
+          replicas: 0
+        store-gateway:
+          replicas: 0
+        compactor:
+          replicas: 0
+        ruler:
+          replicas: 0
+        nginx:
           enabled: true
   destination:
     server: 'https://kubernetes.default.svc'
@@ -88,7 +153,6 @@ spec:
             - secretName: grafana-tls
               hosts:
                 - "grafana.ops-study.xyz"
-        # Datasource tự động kết nối Loki
         datasources:
           datasources.yaml:
             apiVersion: 1
@@ -98,6 +162,12 @@ spec:
                 url: http://loki-gateway.monitoring.svc.cluster.local
                 access: proxy
                 isDefault: false
+              - name: Mimir
+                type: prometheus
+                # Mimir expose Prometheus-compatible API
+                url: http://mimir-nginx.monitoring.svc.cluster.local/prometheus
+                access: proxy
+                isDefault: true
         sidecar:
           datasources:
             enabled: true
@@ -131,7 +201,9 @@ spec:
           configMap:
             create: true
             content: |
-              // Thu thập logs từ tất cả pod
+              // =====================
+              // LOGS: Thu thập pod logs
+              // =====================
               discovery.kubernetes "pods" {
                 role = "pod"
               }
@@ -150,6 +222,10 @@ spec:
                   source_labels = ["__meta_kubernetes_pod_container_name"]
                   target_label  = "container"
                 }
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_node_name"]
+                  target_label  = "node"
+                }
               }
 
               loki.source.kubernetes "pods" {
@@ -157,19 +233,66 @@ spec:
                 forward_to = [loki.write.default.receiver]
               }
 
-              // Thu thập cluster events
               loki.source.kubernetes_events "events" {
                 forward_to = [loki.write.default.receiver]
               }
 
-              // Gửi logs về Loki
               loki.write "default" {
                 endpoint {
                   url = "http://loki-gateway.monitoring.svc.cluster.local/loki/api/v1/push"
                 }
               }
+
+              // =====================
+              // METRICS: Scrape K8s
+              // =====================
+              discovery.kubernetes "nodes" {
+                role = "node"
+              }
+
+              discovery.kubernetes "services" {
+                role = "service"
+              }
+
+              // Scrape kubelet metrics (node resource usage)
+              prometheus.scrape "kubelet" {
+                targets = discovery.kubernetes.nodes.targets
+                scheme  = "https"
+                tls_config {
+                  insecure_skip_verify = true
+                }
+                bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                forward_to = [prometheus.remote_write.mimir.receiver]
+                job_name = "kubelet"
+              }
+
+              // Scrape cAdvisor (container metrics)
+              prometheus.scrape "cadvisor" {
+                targets = [for _, node in discovery.kubernetes.nodes.targets => {
+                  "__address__" = node["__address__"],
+                  "__metrics_path__" = "/metrics/cadvisor",
+                  "__scheme__" = "https",
+                }]
+                tls_config {
+                  insecure_skip_verify = true
+                }
+                bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                forward_to = [prometheus.remote_write.mimir.receiver]
+                job_name = "cadvisor"
+              }
+
+              // Gửi metrics về Mimir
+              prometheus.remote_write "mimir" {
+                endpoint {
+                  url = "http://mimir-nginx.monitoring.svc.cluster.local/api/v1/push"
+                }
+              }
         controller:
           type: daemonset
+        rbac:
+          create: true
+        serviceAccount:
+          create: true
         tolerations:
           - operator: Exists
   destination:
