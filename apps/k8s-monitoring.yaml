@@ -46,6 +46,11 @@ spec:
           replicas: 0
         gateway:
           enabled: true
+        # Tắt memcached cache để tiết kiệm RAM
+        chunksCache:
+          enabled: false
+        resultsCache:
+          enabled: false
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: monitoring
