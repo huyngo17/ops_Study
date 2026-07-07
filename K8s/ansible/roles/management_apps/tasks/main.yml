@@ -88,6 +88,7 @@
     - { name: 'grafana', url: 'https://grafana.github.io/helm-charts' }
     - { name: 'jenkins', url: 'https://charts.jenkins.io' }
     - { name: 'hashicorp', url: 'https://helm.releases.hashicorp.com' }
+    - { name: 'argo', url: 'https://argoproj.github.io/argo-helm' }
 
 - name: Thêm Helm Repo cho AWS EBS CSI Driver
   kubernetes.core.helm_repository:
@@ -138,6 +139,9 @@
     name: ingress-nginx
     chart_ref: ingress-nginx/ingress-nginx
     release_namespace: ingress-nginx
+    kubeconfig: /etc/kubernetes/admin.conf
+    wait: true
+    wait_timeout: "300s"
     values:
       controller:
         service:
@@ -169,44 +173,17 @@
         admissionWebhooks:
           enabled: false
 
-- name: Chờ cho các Pod của NGINX Ingress Controller sẵn sàng hoàn toàn
-  kubernetes.core.k8s_info:
-    kind: Pod
-    namespace: ingress-nginx
-    label_selectors:
-      - app.kubernetes.io/component=controller
-  register: management_apps_nginx_ingress_pods
-  until: >
-    management_apps_nginx_ingress_pods.resources | length > 0 and
-    management_apps_nginx_ingress_pods.resources
-    | map(attribute='status.containerStatuses')
-    | select('defined') | flatten
-    | map(attribute='ready') | select('equalto', true)
-    | list | length == management_apps_nginx_ingress_pods.resources
-    | map(attribute='status.containerStatuses') | select('defined') | flatten | length
-  retries: 30
-  delay: 10
-
-- name: Cài đặt Cert-Manager (Thành phần quản lý và xin chứng chỉ Let's Encrypt)
-  kubernetes.core.k8s:
-    state: present
-    src: https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.yaml
+- name: Cài đặt Cert-Manager bằng Helm
+  kubernetes.core.helm:
+    name: cert-manager
+    chart_ref: jetstack/cert-manager
+    release_namespace: cert-manager
+    create_namespace: true
     kubeconfig: /etc/kubernetes/admin.conf
-
-- name: Chờ cho các Pod của cert-manager sẵn sàng hoàn toàn
-  kubernetes.core.k8s_info:
-    kind: Pod
-    namespace: cert-manager
-  register: management_apps_cert_manager_pods
-  until: >
-    management_apps_cert_manager_pods.resources | length > 0 and
-    management_apps_cert_manager_pods.resources
-    | map(attribute='status.containerStatuses') | flatten
-    | map(attribute='ready') | select('equalto', true)
-    | list | length == management_apps_cert_manager_pods.resources
-    | map(attribute='status.containerStatuses') | flatten | length
-  retries: 20
-  delay: 10
+    wait: true
+    wait_timeout: "300s"
+    values:
+      installCRDs: true
 
 - name: Tạo Kubernetes Secret chứa Cloudflare API Token
   kubernetes.core.k8s:
@@ -243,40 +220,35 @@
                     name: cloudflare-api-token-secret
                     key: api-token
 
-- name: Tạo namespace dành riêng cho ArgoCD
+- name: Xóa Namespace argocd cũ (Cho phép bỏ qua nếu kẹt)
   kubernetes.core.k8s:
     name: argocd
-    api_version: v1
     kind: Namespace
-    state: present
+    state: absent
     kubeconfig: /etc/kubernetes/admin.conf
+    wait: true
+    wait_timeout: 45
+  register: management_apps_delete_ns_result
+  ignore_errors: true
+
+- name: Render file cấu hình ArgoCD từ template
+  ansible.builtin.template:
+    src: argocd-values.yaml.j2
+    dest: /tmp/argocd-values.yaml
+    mode: '0644'
 
 - name: Cài đặt bộ não GitOps ArgoCD lên cụm K8s
   kubernetes.core.helm:
     name: argocd
     chart_ref: argo/argo-cd
-    chart_repo_url: https://argoproj.github.io/argo-helm
     release_namespace: argocd
+    create_namespace: true
     kubeconfig: /etc/kubernetes/admin.conf
     reset_values: true
     wait: true
     wait_timeout: "600s"
-    values:
-      global:
-        nodeSelector:
-          node-role.kubernetes.io/worker: ""
-      server:
-        ingress:
-          enabled: true
-          ingressClassName: nginx
-          annotations:
-            cert-manager.io/cluster-issuer: letsencrypt-prod
-          hosts:
-            - "argo.{{ domain_suffix }}"
-          tls:
-            - secretName: argocd-server-tls
-              hosts:
-                - "argo.{{ domain_suffix }}"
+    values_files:
+      - /tmp/argocd-values.yaml
 
 - name: Khởi tạo Root Application để ArgoCD tự động đồng bộ đống Apps trên Git
   kubernetes.core.k8s:

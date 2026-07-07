@@ -37,13 +37,14 @@ resource "null_resource" "run_ansible" {
     aws_instance.master,
     aws_instance.worker1,
     aws_instance.worker2,
-    local_file.ansible_inventory
+    local_file.ansible_inventory,
+    local_file.private_key
   ]
   # 3. Kích hoạt lệnh chạy Ansible Playbook tự động
   provisioner "local-exec" {
     command = <<EOT
       cd ${path.module}/../ansible
-      ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i inventory.ini playbook.yml
+      ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i inventory.ini site.yml
     EOT
   }
 }

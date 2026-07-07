@@ -1,0 +1,113 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: k8s-monitoring-system
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://grafana.github.io/helm-charts'
+    chart: k8s-monitoring
+    targetRevision: 1.x.x
+    helm:
+      values: |
+        cluster:
+          name: my-k8s-cluster
+
+        # --- LƯU TRỮ LOKI (LOGS) ---
+        loki:
+          enabled: true
+          deploymentMode: SingleBinary
+          loki:
+            auth_enabled: false
+            commonConfig:
+              replication_factor: 1
+            storage:
+              type: filesystem
+          singleBinary:
+            nodeSelector:
+              node-role.kubernetes.io/worker: ""
+            persistence:
+              enabled: true
+              size: 10Gi
+
+        # --- LƯU TRỮ MIMIR (METRICS) ---
+        mimir:
+          enabled: true
+          deploymentMode: SingleBinary
+          mimir:
+            config:
+              multitenancy_enabled: false
+          singleBinary:
+            nodeSelector:
+              node-role.kubernetes.io/worker: ""
+            persistence:
+              enabled: true
+              size: 10Gi
+
+        # --- GIAO DIỆN GRAFANA UI ---
+        grafana:
+          enabled: true
+          adminUser: admin
+          adminPassword: "123abc@A"
+          nodeSelector:
+            node-role.kubernetes.io/worker: ""
+          persistence:
+            enabled: true
+            size: 8Gi
+          ingress:
+            enabled: true
+            ingressClassName: nginx
+            annotations:
+              cert-manager.io/cluster-issuer: letsencrypt-prod
+            hosts:
+              - "grafana.{{ domain_suffix }}"
+            tls:
+              - secretName: grafana-tls
+                hosts:
+                  - "grafana.{{ domain_suffix }}"
+          sidecar:
+            datasources:
+              enabled: true
+              label: grafana_datasource
+              searchNamespace: ALL
+
+        # --- THU THẬP DỮ LIỆU (ALLOY) ---
+        collectors:
+          alloy:
+            enabled: true
+            nodeSelector:
+              node-role.kubernetes.io/worker: ""
+
+        destinations:
+          loki:
+            type: loki
+            url: http://k8s-monitoring-loki-gateway.monitoring.svc.cluster.local/loki/api/v1/push
+          mimir:
+            type: prometheus
+            url: http://k8s-monitoring-mimir-gateway.monitoring.svc.cluster.local/api/v1/push
+
+        features:
+          metrics:
+            enabled: true
+            collectors: [alloy]
+            node-exporter:
+              enabled: true
+            kube-state-metrics:
+              enabled: true
+          logs:
+            enabled: true
+            collectors: [alloy]
+            pod_logs:
+              enabled: true
+            cluster_events:
+              enabled: true
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

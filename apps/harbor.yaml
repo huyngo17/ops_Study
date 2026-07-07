@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: harbor-registry
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://helm.goharbor.io'
+    chart: harbor
+    targetRevision: 1.14.x
+    helm:
+      values: |
+        expose:
+          type: ingress
+          ingress:
+            hosts:
+              core: "harbor.{{ domain_suffix }}"
+            className: nginx
+            annotations:
+              cert-manager.io/cluster-issuer: letsencrypt-prod
+        externalURL: "https://harbor.{{ domain_suffix }}"
+        
+        # Tự động gán PVC mặc định bền vững
+        persistence:
+          enabled: true
+          persistentVolumeClaim:
+            registry:
+              size: 30Gi
+            chartmuseum:
+              size: 5Gi
+            jobservice:
+              size: 1Gi
+            database:
+              size: 5Gi
+            redis:
+              size: 1Gi
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: harbor
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

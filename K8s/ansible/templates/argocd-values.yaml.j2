@@ -1,0 +1,20 @@
+# templates/argocd-values.yaml.j2
+global:
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+server:
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+      nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+    hosts:
+      - host: "argo.{{ domain_suffix }}"
+        paths:
+          - /
+    tls:
+      - secretName: argocd-server-tls
+        hosts:
+          - "argo.{{ domain_suffix }}"
