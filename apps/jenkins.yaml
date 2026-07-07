@@ -13,8 +13,9 @@ spec:
       values: |
         controller:
           componentName: "jenkins-controller"
-          adminUser: "admin"
-          adminPassword: "123abc@A"
+          admin:
+            username: "admin"
+            password: "123abc@A"
           persistence:
             enabled: true
             size: "20Gi"
