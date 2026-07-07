@@ -23,11 +23,11 @@ spec:
             ingressClassName: nginx
             annotations:
               cert-manager.io/cluster-issuer: letsencrypt-prod
-            hostName: "jenkins.{{ domain_suffix }}"
+            hostName: "jenkins.ops-study.xyz"
             tls:
               - secretName: jenkins-tls
                 hosts:
-                  - "jenkins.{{ domain_suffix }}"
+                  - "jenkins.ops-study.xyz"
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: jenkins

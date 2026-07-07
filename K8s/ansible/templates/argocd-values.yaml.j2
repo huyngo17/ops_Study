@@ -2,19 +2,22 @@
 global:
   nodeSelector:
     node-role.kubernetes.io/worker: ""
+
+configs:
+  params:
+    # Tắt HTTPS redirect nội bộ của ArgoCD server
+    # Đây là cách đúng để set --insecure flag trong argo-helm chart
+    server.insecure: true
+
 server:
   ingress:
     enabled: true
     ingressClassName: nginx
+    hostname: "argo.{{ domain_suffix }}"
+    path: /
+    pathType: Prefix
     annotations:
-      cert-manager.io/cluster-issuer: letsencrypt-prod
-      nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
-      nginx.ingress.kubernetes.io/ssl-passthrough: "true"
-    hosts:
-      - host: "argo.{{ domain_suffix }}"
-        paths:
-          - /
-    tls:
-      - secretName: argocd-server-tls
-        hosts:
-          - "argo.{{ domain_suffix }}"
+      nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+      nginx.ingress.kubernetes.io/ssl-redirect: "false"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    tls: false

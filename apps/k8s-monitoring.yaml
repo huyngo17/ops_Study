@@ -61,11 +61,11 @@ spec:
             annotations:
               cert-manager.io/cluster-issuer: letsencrypt-prod
             hosts:
-              - "grafana.{{ domain_suffix }}"
+              - "grafana.ops-study.xyz"
             tls:
               - secretName: grafana-tls
                 hosts:
-                  - "grafana.{{ domain_suffix }}"
+                  - "grafana.ops-study.xyz"
           sidecar:
             datasources:
               enabled: true

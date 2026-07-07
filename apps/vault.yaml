@@ -18,11 +18,11 @@ spec:
             annotations:
               cert-manager.io/cluster-issuer: letsencrypt-prod
             hosts:
-              - host: "vault.{{ domain_suffix }}"
+              - host: "vault.ops-study.xyz"
             tls:
               - secretName: vault-tls
                 hosts:
-                  - "vault.{{ domain_suffix }}"
+                  - "vault.ops-study.xyz"
           dataStorage:
             enabled: true
             size: 10Gi

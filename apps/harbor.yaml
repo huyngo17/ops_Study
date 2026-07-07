@@ -15,11 +15,11 @@ spec:
           type: ingress
           ingress:
             hosts:
-              core: "harbor.{{ domain_suffix }}"
+              core: "harbor.ops-study.xyz"
             className: nginx
             annotations:
               cert-manager.io/cluster-issuer: letsencrypt-prod
-        externalURL: "https://harbor.{{ domain_suffix }}"
+        externalURL: "https://harbor.ops-study.xyz"
         
         # Tự động gán PVC mặc định bền vững
         persistence:
