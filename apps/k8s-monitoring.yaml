@@ -1,6 +1,6 @@
 ---
 # ============================================================
-# LOKI - Log storage
+# LOKI - Log storage (SingleBinary + EBS)
 # ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -58,7 +58,8 @@ spec:
 
 ---
 # ============================================================
-# MIMIR - Metrics storage (Single Binary mode + EBS)
+# MIMIR - Metrics storage (SingleBinary chart + EBS)
+# chart "mimir" khác với "mimir-distributed"
 # ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -73,7 +74,6 @@ spec:
     targetRevision: 5.x.x
     helm:
       values: |
-        deploymentMode: SingleBinary
         mimir:
           structuredConfig:
             multitenancy_enabled: false
@@ -88,6 +88,7 @@ spec:
             store_gateway:
               sharding_ring:
                 replication_factor: 1
+        # SingleBinary: 1 pod chạy tất cả components
         singleBinary:
           replicas: 1
           nodeSelector:
@@ -95,7 +96,7 @@ spec:
           persistentVolume:
             enabled: true
             size: 20Gi
-        # Tắt tất cả microservice components
+        # Tắt hết microservice pods
         ingester:
           replicas: 0
           zoneAwareReplication:
@@ -140,7 +141,7 @@ spec:
 
 ---
 # ============================================================
-# TEMPO - Distributed tracing storage
+# TEMPO - Distributed tracing (SingleBinary + EBS)
 # ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -166,8 +167,6 @@ spec:
           size: 10Gi
         nodeSelector:
           node-role.kubernetes.io/worker: ""
-        service:
-          type: ClusterIP
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: monitoring
@@ -180,7 +179,7 @@ spec:
 
 ---
 # ============================================================
-# GRAFANA - UI: kết nối Loki + Mimir + Tempo
+# GRAFANA - UI: Mimir + Loki + Tempo datasources
 # ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -248,7 +247,7 @@ spec:
 
 ---
 # ============================================================
-# ALLOY - Collector: scrape metrics + collect logs + traces
+# ALLOY - Collector: logs → Loki, metrics → Mimir
 # ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -268,7 +267,7 @@ spec:
             create: true
             content: |
               // ============================================================
-              // LOGS: Thu thập pod logs → Loki
+              // LOGS: pod logs + events → Loki
               // ============================================================
               discovery.kubernetes "pods" {
                 role = "pod"
@@ -310,13 +309,12 @@ spec:
               }
 
               // ============================================================
-              // METRICS: Scrape kubelet + cAdvisor → Mimir
+              // METRICS: kubelet + cAdvisor → Mimir
               // ============================================================
               discovery.kubernetes "nodes" {
                 role = "node"
               }
 
-              // Kubelet metrics
               prometheus.scrape "kubelet" {
                 targets = discovery.kubernetes.nodes.targets
                 scheme  = "https"
@@ -328,7 +326,6 @@ spec:
                 job_name          = "kubelet"
               }
 
-              // cAdvisor - container resource metrics
               discovery.relabel "cadvisor" {
                 targets = discovery.kubernetes.nodes.targets
                 rule {
