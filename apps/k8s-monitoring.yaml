@@ -377,6 +377,9 @@ spec:
                 endpoint {
                   url = "http://mimir-nginx.monitoring.svc.cluster.local/api/v1/push"
                 }
+                external_labels = {
+                  cluster = "k8s-study",
+                }
               }
 
               // ============================================================
