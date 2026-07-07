@@ -58,8 +58,7 @@ spec:
 
 ---
 # ============================================================
-# MIMIR - Metrics storage (SingleBinary chart + EBS)
-# chart "mimir" khác với "mimir-distributed"
+# MIMIR - Metrics storage (mimir-distributed + minio built-in)
 # ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -77,54 +76,46 @@ spec:
         mimir:
           structuredConfig:
             multitenancy_enabled: false
-            common:
-              storage:
-                backend: filesystem
-                filesystem:
-                  dir: /data/blocks
             ingester:
               ring:
                 replication_factor: 1
             store_gateway:
               sharding_ring:
                 replication_factor: 1
-        # SingleBinary: 1 pod chạy tất cả components
-        singleBinary:
-          replicas: 1
-          nodeSelector:
-            node-role.kubernetes.io/worker: ""
-          persistentVolume:
-            enabled: true
-            size: 20Gi
-        # Tắt hết microservice pods
+        # Tắt zone-aware replication (cần >= 3 nodes)
         ingester:
-          replicas: 0
+          replicas: 1
+          zoneAwareReplication:
+            enabled: false
+        store_gateway:
+          replicas: 1
           zoneAwareReplication:
             enabled: false
         distributor:
-          replicas: 0
+          replicas: 1
         querier:
-          replicas: 0
+          replicas: 1
         query_frontend:
-          replicas: 0
+          replicas: 1
         query_scheduler:
-          replicas: 0
-        store_gateway:
-          replicas: 0
-          zoneAwareReplication:
-            enabled: false
+          replicas: 1
         compactor:
-          replicas: 0
+          replicas: 1
         ruler:
           replicas: 0
         alertmanager:
           enabled: false
         overrides_exporter:
-          replicas: 0
+          replicas: 1
         rollout_operator:
-          enabled: false
+          enabled: true
+        # Bật minio built-in dùng EBS
         minio:
-          enabled: false
+          enabled: true
+          nodeSelector:
+            node-role.kubernetes.io/worker: ""
+          persistence:
+            size: 20Gi
         nginx:
           enabled: true
         metaMonitoring:
