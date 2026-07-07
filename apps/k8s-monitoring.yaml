@@ -1,5 +1,7 @@
 ---
-# --- LOKI: Log storage ---
+# ============================================================
+# LOKI - Log storage
+# ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -55,7 +57,9 @@ spec:
       - CreateNamespace=true
 
 ---
-# --- MIMIR: Metrics storage (Prometheus-compatible) ---
+# ============================================================
+# MIMIR - Metrics storage (Prometheus-compatible remote write)
+# ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -69,7 +73,6 @@ spec:
     targetRevision: 5.x.x
     helm:
       values: |
-        # SingleBinary mode - đơn giản nhất cho self-hosted
         mimir:
           structuredConfig:
             multitenancy_enabled: false
@@ -77,39 +80,52 @@ spec:
               storage:
                 backend: filesystem
                 filesystem:
-                  dir: /data
-            blocks_storage:
-              filesystem:
-                dir: /data/blocks
+                  dir: /data/blocks
             ingester:
               ring:
                 replication_factor: 1
-        # Dùng single binary thay vì microservices
-        deploymentMode: SingleBinary
-        singleBinary:
+            store_gateway:
+              sharding_ring:
+                replication_factor: 1
+        ingester:
           replicas: 1
-          nodeSelector:
-            node-role.kubernetes.io/worker: ""
-          persistence:
+          zoneAwareReplication:
+            enabled: false
+          persistentVolume:
             enabled: true
             size: 20Gi
-        # Tắt các microservice component
-        ingester:
-          replicas: 0
+        store_gateway:
+          replicas: 1
+          zoneAwareReplication:
+            enabled: false
+          persistentVolume:
+            enabled: true
+            size: 5Gi
         distributor:
-          replicas: 0
+          replicas: 1
         querier:
-          replicas: 0
-        query-frontend:
-          replicas: 0
-        store-gateway:
-          replicas: 0
+          replicas: 1
+        query_frontend:
+          replicas: 1
         compactor:
-          replicas: 0
+          replicas: 1
+          persistentVolume:
+            enabled: true
+            size: 5Gi
         ruler:
           replicas: 0
+        alertmanager:
+          enabled: false
+        overrides_exporter:
+          replicas: 1
+        rollout_operator:
+          enabled: false
+        minio:
+          enabled: false
         nginx:
           enabled: true
+        metaMonitoring:
+          enabled: false
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: monitoring
@@ -121,7 +137,49 @@ spec:
       - CreateNamespace=true
 
 ---
-# --- GRAFANA: UI dashboard ---
+# ============================================================
+# TEMPO - Distributed tracing storage
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tempo
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://grafana.github.io/helm-charts'
+    chart: tempo
+    targetRevision: 1.x.x
+    helm:
+      values: |
+        tempo:
+          storage:
+            trace:
+              backend: local
+              local:
+                path: /var/tempo/traces
+        persistence:
+          enabled: true
+          size: 10Gi
+        nodeSelector:
+          node-role.kubernetes.io/worker: ""
+        service:
+          type: ClusterIP
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+
+---
+# ============================================================
+# GRAFANA - UI: kết nối Loki + Mimir + Tempo
+# ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -157,17 +215,21 @@ spec:
           datasources.yaml:
             apiVersion: 1
             datasources:
+              - name: Mimir
+                type: prometheus
+                url: http://mimir-nginx.monitoring.svc.cluster.local/prometheus
+                access: proxy
+                isDefault: true
               - name: Loki
                 type: loki
                 url: http://loki-gateway.monitoring.svc.cluster.local
                 access: proxy
                 isDefault: false
-              - name: Mimir
-                type: prometheus
-                # Mimir expose Prometheus-compatible API
-                url: http://mimir-nginx.monitoring.svc.cluster.local/prometheus
+              - name: Tempo
+                type: tempo
+                url: http://tempo.monitoring.svc.cluster.local:3100
                 access: proxy
-                isDefault: true
+                isDefault: false
         sidecar:
           datasources:
             enabled: true
@@ -183,7 +245,9 @@ spec:
       - CreateNamespace=true
 
 ---
-# --- ALLOY: Collector (metrics + logs) ---
+# ============================================================
+# ALLOY - Collector: scrape metrics + collect logs + traces
+# ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -201,14 +265,14 @@ spec:
           configMap:
             create: true
             content: |
-              // =====================
-              // LOGS: Thu thập pod logs
-              // =====================
+              // ============================================================
+              // LOGS: Thu thập pod logs → Loki
+              // ============================================================
               discovery.kubernetes "pods" {
                 role = "pod"
               }
 
-              discovery.relabel "pods" {
+              discovery.relabel "pod_logs" {
                 targets = discovery.kubernetes.pods.targets
                 rule {
                   source_labels = ["__meta_kubernetes_namespace"]
@@ -229,7 +293,7 @@ spec:
               }
 
               loki.source.kubernetes "pods" {
-                targets    = discovery.relabel.pods.output
+                targets    = discovery.relabel.pod_logs.output
                 forward_to = [loki.write.default.receiver]
               }
 
@@ -243,18 +307,14 @@ spec:
                 }
               }
 
-              // =====================
-              // METRICS: Scrape K8s
-              // =====================
+              // ============================================================
+              // METRICS: Scrape kubelet + cAdvisor → Mimir
+              // ============================================================
               discovery.kubernetes "nodes" {
                 role = "node"
               }
 
-              discovery.kubernetes "services" {
-                role = "service"
-              }
-
-              // Scrape kubelet metrics (node resource usage)
+              // Kubelet metrics
               prometheus.scrape "kubelet" {
                 targets = discovery.kubernetes.nodes.targets
                 scheme  = "https"
@@ -262,11 +322,11 @@ spec:
                   insecure_skip_verify = true
                 }
                 bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-                forward_to = [prometheus.remote_write.mimir.receiver]
-                job_name = "kubelet"
+                forward_to        = [prometheus.remote_write.mimir.receiver]
+                job_name          = "kubelet"
               }
 
-              // Relabel nodes để scrape cAdvisor endpoint
+              // cAdvisor - container resource metrics
               discovery.relabel "cadvisor" {
                 targets = discovery.kubernetes.nodes.targets
                 rule {
@@ -279,18 +339,16 @@ spec:
                 }
               }
 
-              // Scrape cAdvisor (container metrics)
               prometheus.scrape "cadvisor" {
                 targets = discovery.relabel.cadvisor.output
                 tls_config {
                   insecure_skip_verify = true
                 }
                 bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-                forward_to = [prometheus.remote_write.mimir.receiver]
-                job_name = "cadvisor"
+                forward_to        = [prometheus.remote_write.mimir.receiver]
+                job_name          = "cadvisor"
               }
 
-              // Gửi metrics về Mimir
               prometheus.remote_write "mimir" {
                 endpoint {
                   url = "http://mimir-nginx.monitoring.svc.cluster.local/api/v1/push"
