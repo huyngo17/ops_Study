@@ -58,7 +58,7 @@ spec:
 
 ---
 # ============================================================
-# MIMIR - Metrics storage (Prometheus-compatible remote write)
+# MIMIR - Metrics storage (Single Binary mode + EBS)
 # ============================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -73,6 +73,7 @@ spec:
     targetRevision: 5.x.x
     helm:
       values: |
+        deploymentMode: SingleBinary
         mimir:
           structuredConfig:
             multitenancy_enabled: false
@@ -87,37 +88,38 @@ spec:
             store_gateway:
               sharding_ring:
                 replication_factor: 1
-        ingester:
+        singleBinary:
           replicas: 1
-          zoneAwareReplication:
-            enabled: false
+          nodeSelector:
+            node-role.kubernetes.io/worker: ""
           persistentVolume:
             enabled: true
             size: 20Gi
-        store_gateway:
-          replicas: 1
+        # Tắt tất cả microservice components
+        ingester:
+          replicas: 0
           zoneAwareReplication:
             enabled: false
-          persistentVolume:
-            enabled: true
-            size: 5Gi
         distributor:
-          replicas: 1
+          replicas: 0
         querier:
-          replicas: 1
+          replicas: 0
         query_frontend:
-          replicas: 1
+          replicas: 0
+        query_scheduler:
+          replicas: 0
+        store_gateway:
+          replicas: 0
+          zoneAwareReplication:
+            enabled: false
         compactor:
-          replicas: 1
-          persistentVolume:
-            enabled: true
-            size: 5Gi
+          replicas: 0
         ruler:
           replicas: 0
         alertmanager:
           enabled: false
         overrides_exporter:
-          replicas: 1
+          replicas: 0
         rollout_operator:
           enabled: false
         minio:
