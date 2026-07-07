@@ -355,6 +355,13 @@ spec:
           create: true
         serviceAccount:
           create: true
+        clusterRole:
+          extraRules:
+            - apiGroups: [""]
+              resources: ["nodes", "nodes/metrics", "nodes/proxy"]
+              verbs: ["get", "list", "watch"]
+            - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+              verbs: ["get"]
         tolerations:
           - operator: Exists
   destination:
