@@ -266,13 +266,22 @@ spec:
                 job_name = "kubelet"
               }
 
+              // Relabel nodes để scrape cAdvisor endpoint
+              discovery.relabel "cadvisor" {
+                targets = discovery.kubernetes.nodes.targets
+                rule {
+                  target_label = "__metrics_path__"
+                  replacement  = "/metrics/cadvisor"
+                }
+                rule {
+                  target_label = "__scheme__"
+                  replacement  = "https"
+                }
+              }
+
               // Scrape cAdvisor (container metrics)
               prometheus.scrape "cadvisor" {
-                targets = [for _, node in discovery.kubernetes.nodes.targets => {
-                  "__address__" = node["__address__"],
-                  "__metrics_path__" = "/metrics/cadvisor",
-                  "__scheme__" = "https",
-                }]
+                targets = discovery.relabel.cadvisor.output
                 tls_config {
                   insecure_skip_verify = true
                 }
