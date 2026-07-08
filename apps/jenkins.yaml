@@ -29,6 +29,41 @@ spec:
               - secretName: jenkins-tls
                 hosts:
                   - "jenkins.ops-study.xyz"
+          # Cài sẵn các plugin cần thiết
+          installPlugins:
+            - kubernetes:latest
+            - workflow-aggregator:latest
+            - git:latest
+            - configuration-as-code:latest
+            - docker-workflow:latest
+            - pipeline-stage-view:latest
+
+        # Agent chạy trong K8s pod - tạo khi build, xóa khi xong
+        agent:
+          enabled: true
+          namespace: jenkins
+          # Pod template mặc định cho agent
+          podTemplates:
+            kaniko: |
+              - name: kaniko
+                serviceAccount: jenkins
+                containers:
+                  - name: kaniko
+                    image: gcr.io/kaniko-project/executor:debug
+                    command: sleep
+                    args: 9999999
+                    ttyEnabled: true
+                  - name: jnlp
+                    image: jenkins/inbound-agent:latest
+
+        # ServiceAccount để agent có quyền tạo pod
+        serviceAccount:
+          create: true
+          name: jenkins
+
+        rbac:
+          create: true
+          readSecrets: true
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: jenkins
