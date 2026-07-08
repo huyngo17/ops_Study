@@ -13,28 +13,43 @@ spec:
       values: |
         expose:
           type: ingress
+          tls:
+            enabled: true
+            certSource: secret
+            secret:
+              secretName: harbor-tls
           ingress:
             hosts:
               core: "harbor.ops-study.xyz"
             className: nginx
             annotations:
               cert-manager.io/cluster-issuer: letsencrypt-prod
+              nginx.ingress.kubernetes.io/ssl-redirect: "true"
+              nginx.ingress.kubernetes.io/proxy-body-size: "0"
+
         externalURL: "https://harbor.ops-study.xyz"
-        
-        # Tự động gán PVC mặc định bền vững
+
+        # Admin password mặc định
+        harborAdminPassword: "123abc@A"
+
+        # nodeSelector để deploy lên worker nodes
+        nodeSelector:
+          node-role.kubernetes.io/worker: ""
+
         persistence:
           enabled: true
           persistentVolumeClaim:
             registry:
               size: 30Gi
-            chartmuseum:
-              size: 5Gi
             jobservice:
-              size: 1Gi
+              jobLog:
+                size: 1Gi
             database:
               size: 5Gi
             redis:
               size: 1Gi
+            trivy:
+              size: 5Gi
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: harbor
