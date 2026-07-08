@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rancher
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://releases.rancher.com/server-charts/stable'
+    chart: rancher
+    targetRevision: 2.10.x
+    helm:
+      values: |
+        # Domain trỏ về ALB
+        hostname: "rancher.ops-study.xyz"
+
+        # Bootstrap password lần đầu login
+        bootstrapPassword: "123abc@A"
+
+        # Dùng cert-manager + Let's Encrypt
+        ingress:
+          tls:
+            source: letsEncrypt
+        letsEncrypt:
+          email: ngoquochuyvn2004@gmail.com
+          ingress:
+            class: nginx
+
+        # Chạy trên worker nodes
+        nodeSelector:
+          node-role.kubernetes.io/worker: ""
+
+        # Replicas tối thiểu cho 2 worker
+        replicas: 2
+
+        # Tắt built-in ingress controller vì đã có NGINX
+        noDefaultAdmin: false
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: cattle-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

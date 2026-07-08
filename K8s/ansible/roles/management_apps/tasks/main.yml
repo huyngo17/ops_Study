@@ -273,3 +273,43 @@
           automated:
             prune: true
             selfHeal: true
+
+- name: Generate bcrypt hash cho ArgoCD admin password
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "import bcrypt; print(bcrypt.hashpw(b'123abc@A', bcrypt.gensalt(rounds=10)).decode())"
+  register: management_apps_argocd_password_hash
+  changed_when: false
+  no_log: true
+
+- name: Set ArgoCD admin password
+  kubernetes.core.k8s:
+    state: patched
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: argocd-secret
+        namespace: argocd
+      stringData:
+        admin.password: "{{ management_apps_argocd_password_hash.stdout }}"
+        admin.passwordMtime: "{{ ansible_date_time.iso8601 }}"
+
+- name: Restart ArgoCD server để apply password mới
+  kubernetes.core.k8s:
+    state: patched
+    kubeconfig: /etc/kubernetes/admin.conf
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: argocd-server
+        namespace: argocd
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: "{{ ansible_date_time.iso8601 }}"
